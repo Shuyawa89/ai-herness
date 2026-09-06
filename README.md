@@ -1,15 +1,17 @@
 # Personal AI Harness
 
-Shared personal instructions and Agent Skills for Claude Code, Codex, and Pi.
+[English](README.en.md) | 日本語
 
-## What is managed
+Claude Code、Codex、Pi で共有する個人用の指示と Agent Skills。
 
-- `AGENTS.md`: the single source of truth for global instructions.
-- `skills/`: cross-agent skills using the Agent Skills `SKILL.md` format.
-- `extensions/`: versioned Pi extensions, loaded automatically by Pi.
-- `bootstrap`: safe, repeatable setup for a new machine.
+## 管理するもの
 
-The bootstrap script connects:
+- `AGENTS.md`: グローバル指示の単一の source of truth。
+- `skills/`: Agent Skills の `SKILL.md` 形式に沿ったクロスエージェント Skill。
+- `extensions/`: バージョン管理された Pi extension。Pi が自動読込する。
+- `bootstrap`: 新しいマシン向けの安全で再現可能なセットアップ。
+
+bootstrap が接続するもの:
 
 ```text
 ~/.claude/CLAUDE.md   -> <repo>/AGENTS.md
@@ -24,9 +26,9 @@ The bootstrap script connects:
   -> <repo>/extensions/pi-prewalk.ts
 ```
 
-Pi reads `~/.agents/skills` directly. Codex system skills remain untouched; only a same-name harness-skill conflict stops installation.
+Pi は `~/.agents/skills` を直接読む。Codex の system skill には触れず、同名の harness skill が競合した場合のみインストールを停止する。
 
-## Set up another machine
+## 別マシンでのセットアップ
 
 ```bash
 git clone <YOUR_REPOSITORY_URL> ~/ai-harness
@@ -36,64 +38,64 @@ cd ~/ai-harness
 ./bootstrap --check
 ```
 
-The script is location-independent even though `~/ai-harness` is the recommended clone path.
+推奨 clone 先は `~/ai-harness` だが、配置場所に依存しない動作をする。
 
-## Safety behavior
+## 安全な動作
 
-- Existing instruction files are moved to a timestamped backup before links are created.
-- An existing same-name skill is linked only when its contents match the repository copy.
-- A different same-name skill stops the entire preflight before any change is made.
-- A failed installation rolls back links and restores files moved during that run.
-- Re-running `./bootstrap` is a no-op when everything is already connected.
-- Links for skills removed from the repository are detected, backed up, and removed on the next install.
+- 既存の指示ファイルは、リンク作成前にタイムスタンプ付きでバックアップする。
+- 同名の既存 skill は、内容がリポジトリのコピーと一致する場合のみリンクする。
+- 同名でも内容が異なる場合は、変更を行う前に preflight 全体を停止する。
+- インストール失敗時はリンクをロールバックし、その実行で移動したファイルを復元する。
+- すべて接続済みの状態で再実行すると no-op になる。
+- リポジトリから削除された skill のリンクは検出され、次回インストール時にバックアップして削除する。
 
-Backups are stored outside the repository under:
+バックアップはリポジトリ外の次の場所に保存される:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/ai-harness/backups/
 ```
 
-For atomic moves, the backup directory must be on the same filesystem as the existing configuration being replaced. If `XDG_STATE_HOME` points to another volume, set `AI_HARNESS_STATE_ROOT` to a private directory on the home volume for the bootstrap run.
+アトミックな移動のため、バックアップディレクトリは置き換え対象の既存設定と同じファイルシステム上にある必要がある。`XDG_STATE_HOME` が別ボリュームを指す場合は、bootstrap 実行時に `AI_HARNESS_STATE_ROOT` をホームボリューム上のプライベートディレクトリへ設定する。
 
-The bootstrap also stores its managed-link manifest at `${XDG_STATE_HOME:-~/.local/state}/ai-harness/managed-links.tsv` so removed skills can be detected safely.
+bootstrap は管理リンクの manifest を `${XDG_STATE_HOME:-~/.local/state}/ai-harness/managed-links.tsv` に保存し、削除済み skill を安全に検出できるようにしている。
 
-Tool credentials, auth files, sessions, model settings, hooks, and tool-specific runtime assets are never copied into this repository. Versioned extension source is safe to keep here; bootstrap symlinks the reviewed Prewalk extension into Pi's global extension directory.
+認証情報、auth ファイル、session、モデル設定、hooks、ツール固有のランタイム資産は、このリポジトリにコピーしない。バージョン管理された extension のソースはここに置いてよく、bootstrap がレビュー済みの Prewalk extension を Pi のグローバル extension ディレクトリへ symlink する。
 
-Third-party material and its license details are recorded in `THIRD_PARTY_NOTICES.md`.
+サードパーティの素材とライセンス詳細は `THIRD_PARTY_NOTICES.md` に記録する。
 
-## Add or update a shared skill
+## 共有 Skill の追加・更新
 
-1. Add or update `skills/<name>/SKILL.md` and its supporting files.
-2. Review the skill for secrets, unsafe commands, and machine-specific paths.
-3. Run `./bootstrap` to create missing per-tool links.
-4. Run `./bootstrap --check`, then commit the reviewed change.
+1. `skills/<name>/SKILL.md` と必要なファイルを追加・更新する。
+2. シークレット、危険なコマンド、マシン固有のパスがないか確認する。
+3. `./bootstrap` を実行して不足しているツールごとのリンクを作る。
+4. `./bootstrap --check` を実行してから、レビュー済みの変更をコミットする。
 
-Some skill installers maintain their own lock files outside this repository and may replace a managed link during an update. If `--check` detects drift, review the upstream change, copy the intended version into `skills/`, and run the bootstrap again.
+一部の skill インストーラはリポジトリ外に独自の lock ファイルを持ち、更新時に管理リンクを置き換えることがある。`--check` が drift を検出したら、上流の変更を確認し、意図したバージョンを `skills/` に取り込んでから bootstrap を再実行する。
 
 ## Pi Prewalk
 
-Prewalk uses a frontier model for exploration, a concrete plan, and one real code mutation, then switches to a cheaper worker model in the **same Pi session**. The default route is:
+Prewalk は、frontier モデルに調査・具体計画・1 回の実コード変更を行わせた後、**同じ Pi session 内で**より安価な worker モデルへ切り替える。デフォルトのルート:
 
 ```text
 openai-codex/gpt-5.6-sol -> openrouter/z-ai/glm-5.3-flash
 ```
 
-From the target project directory, start Pi normally:
+対象プロジェクトのディレクトリから、普通に Pi を起動する:
 
 ```bash
 pi
 ```
 
-Then run `/prewalk` before submitting the task. Bootstrap installs the reviewed extension globally as a symlink, so ordinary Pi sessions have the command. Use `/prewalk <worker>` or `/prewalk <frontier> <worker>` to override the route, and `/prewalk off` to disarm it.
+タスクを入力する前に `/prewalk` を実行する。bootstrap がレビュー済み extension をグローバルに symlink するため、通常の Pi session でコマンドが使える。ルートを変えるには `/prewalk <worker>` または `/prewalk <frontier> <worker>`、解除は `/prewalk off`。
 
-The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
+選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に計画と scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
 
-`skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. It is shared with Claude Code and Codex; Pi supplies the automatic Prewalk model handoff.
+`skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。Claude Code と Codex でも共有され、Pi は自動の Prewalk モデルハンドオフを提供する。
 
-The current request's language selects one role and one Skill; the harness does not force a remembered `/workflow` command vocabulary. Planner approval and final completion remain conversational human gates. For substantial Pi implementation work, run `/prewalk` before the task to use the frontier-to-worker handoff.
+現在の依頼の言葉が役割と Skill を一つ選ぶ。`/workflow` のようなコマンド語彙は強制しない。Planner の承認と完了判断は会話の中で人間が行う gate であり、実装フェーズへ切り替える。
 
-## Existing machine-specific configuration
+## 既存のマシン固有設定
 
-The bootstrap deliberately does not modify `~/.codex/config.toml`, Claude settings, Pi settings, authentication, hooks, agents, or prompts. It adds only the reviewed shared Skills and the reviewed Pi Prewalk extension as symlinks. Repository-specific `AGENTS.md` and `CLAUDE.md` files continue to apply according to each tool's normal precedence rules.
+bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証、hooks、agents、prompts を意図的に変更しない。追加するのはレビュー済みの共有 Skill とレビュー済みの Pi Prewalk extension の symlink のみ。リポジトリ固有の `AGENTS.md` と `CLAUDE.md` は、各ツールの通常の優先順位ルールに従って適用される。
 
-When working inside this repository, the same `AGENTS.md` may be discovered once globally and once as project guidance. This is harmless, but other repositories are the normal working location for this harness.
+このリポジトリ内で作業するとき、同じ `AGENTS.md` がグローバルとプロジェクトの両方として検出されることがある。これは無害だが、この harness の通常の作業場所は他のリポジトリである。
