@@ -1,0 +1,474 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+INSTRUCTIONS_FILE="$SCRIPT_DIR/AGENTS.md"
+SKILLS_DIR="$SCRIPT_DIR/skills"
+EXTENSIONS_DIR="$SCRIPT_DIR/extensions"
+PI_PREWALK_EXTENSION="$EXTENSIONS_DIR/pi-prewalk.ts"
+PREWALK_CORE_MODULE="$EXTENSIONS_DIR/prewalk-core.mjs"
+HARNESS_USER_HOME="${AI_HARNESS_USER_HOME:-$HOME}"
+STATE_ROOT="${AI_HARNESS_STATE_ROOT:-${XDG_STATE_HOME:-$HARNESS_USER_HOME/.local/state}/ai-harness}"
+MANAGED_LINKS_FILE="$STATE_ROOT/managed-links.tsv"
+
+MODE="install"
+BACKUP_ROOT=""
+LAST_BACKUP_PATH=""
+ROLLBACK_ACTIVE=0
+BACKUP_ORIGINALS=()
+BACKUP_PATHS=()
+CREATED_LINKS=()
+CREATED_TARGETS=()
+STALE_LINKS=()
+STALE_TARGETS=()
+MANIFEST_BACKUP_PATH=""
+MANIFEST_HAD_ORIGINAL=0
+MANIFEST_WRITTEN=0
+
+usage() {
+  printf '%s\n' \
+    'Usage: ./bootstrap [--dry-run|--check]' \
+    '' \
+    '  --dry-run  Validate and show planned changes without writing.' \
+    '  --check    Verify that every managed link points to this repository.'
+}
+
+fail() {
+  printf 'Error: %s\n' "$*" >&2
+  return 1
+}
+
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+link_matches() {
+  [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]
+}
+
+device_id() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%d' "$1"
+  else
+    stat -c '%d' "$1"
+  fi
+}
+
+directory_owner() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%u' "$1"
+  else
+    stat -c '%u' "$1"
+  fi
+}
+
+directory_permissions() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
+}
+
+validate_private_directory() {
+  local directory_path="$1"
+  local permissions
+
+  [ -d "$directory_path" ] || fail "state path is not a directory: $directory_path"
+  [ ! -L "$directory_path" ] || fail "state directory must not be a symlink: $directory_path"
+  [ "$(directory_owner "$directory_path")" = "$(id -u)" ] || fail "state directory is not owned by the current user: $directory_path"
+  permissions="$(directory_permissions "$directory_path")"
+  [ $((8#$permissions & 8#022)) -eq 0 ] || fail "state directory must not be group/world writable: $directory_path"
+}
+
+validate_existing_state() {
+  local manifest_permissions
+
+  if [ ! -e "$STATE_ROOT" ] && [ ! -L "$STATE_ROOT" ]; then
+    return 0
+  fi
+  [ ! -L "$STATE_ROOT" ] || fail "state directory must not be a symlink: $STATE_ROOT"
+  STATE_ROOT="$(cd "$STATE_ROOT" && pwd -P)"
+  MANAGED_LINKS_FILE="$STATE_ROOT/managed-links.tsv"
+  validate_private_directory "$STATE_ROOT"
+
+  if [ -e "$STATE_ROOT/backups" ] || [ -L "$STATE_ROOT/backups" ]; then
+    validate_private_directory "$STATE_ROOT/backups"
+  fi
+  if [ -e "$MANAGED_LINKS_FILE" ] || [ -L "$MANAGED_LINKS_FILE" ]; then
+    [ -f "$MANAGED_LINKS_FILE" ] || fail "managed-links manifest is not a regular file: $MANAGED_LINKS_FILE"
+    [ ! -L "$MANAGED_LINKS_FILE" ] || fail "managed-links manifest must not be a symlink: $MANAGED_LINKS_FILE"
+    [ "$(directory_owner "$MANAGED_LINKS_FILE")" = "$(id -u)" ] || fail "managed-links manifest is not owned by the current user"
+    manifest_permissions="$(directory_permissions "$MANAGED_LINKS_FILE")"
+    [ $((8#$manifest_permissions & 8#022)) -eq 0 ] || fail "managed-links manifest must not be group/world writable"
+  fi
+}
+
+add_link() {
+  LINK_PATHS+=("$1")
+  LINK_TARGETS+=("$2")
+  LINK_KINDS+=("$3")
+}
+
+link_is_currently_managed() {
+  local candidate="$1"
+  local index
+
+  for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+    if [ "${LINK_PATHS[$index]}" = "$candidate" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_stale_links() {
+  local old_path
+  local old_target
+  local old_dir
+  local old_name
+
+  [ -f "$MANAGED_LINKS_FILE" ] || return 0
+
+  while IFS=$'\t' read -r old_path old_target; do
+    [ -n "$old_path" ] && [ -n "$old_target" ] || continue
+    link_is_currently_managed "$old_path" && continue
+    old_dir="$(dirname "$old_path")"
+    old_name="$(basename "$old_path")"
+    case "$old_dir" in
+      "$HARNESS_USER_HOME/.claude/skills"|"$HARNESS_USER_HOME/.agents/skills"|"$HARNESS_USER_HOME/.codex/skills")
+        [[ "$old_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || continue
+        ;;
+      "$HARNESS_USER_HOME/.pi/agent/extensions")
+        case "$old_name" in
+          ai-harness-prewalk.ts|prewalk-core.mjs|workflow-core.mjs) ;;
+          *) continue ;;
+        esac
+        ;;
+      *) continue ;;
+    esac
+    if link_matches "$old_path" "$old_target"; then
+      STALE_LINKS+=("$old_path")
+      STALE_TARGETS+=("$old_target")
+    fi
+  done < "$MANAGED_LINKS_FILE"
+}
+
+write_managed_links() {
+  local manifest_tmp
+  local index
+
+  [ ! -L "$STATE_ROOT" ] || fail "state directory must not be a symlink: $STATE_ROOT"
+  mkdir -p "$STATE_ROOT"
+  STATE_ROOT="$(cd "$STATE_ROOT" && pwd -P)"
+  MANAGED_LINKS_FILE="$STATE_ROOT/managed-links.tsv"
+  validate_private_directory "$STATE_ROOT"
+  manifest_tmp="$(mktemp "$STATE_ROOT/.managed-links.XXXXXX")"
+  for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+    printf '%s\t%s\n' "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}" >> "$manifest_tmp"
+  done
+  if [ -f "$MANAGED_LINKS_FILE" ]; then
+    MANIFEST_BACKUP_PATH="$(mktemp "$STATE_ROOT/.managed-links.previous.XXXXXX")"
+    cp -p "$MANAGED_LINKS_FILE" "$MANIFEST_BACKUP_PATH"
+    MANIFEST_HAD_ORIGINAL=1
+  fi
+  trap '' HUP INT TERM
+  mv "$manifest_tmp" "$MANAGED_LINKS_FILE"
+  MANIFEST_WRITTEN=1
+  trap 'rollback; exit 129' HUP
+  trap 'rollback; exit 130' INT
+  trap 'rollback; exit 143' TERM
+}
+
+preflight_link() {
+  local link_path="$1"
+  local target_path="$2"
+  local link_kind="$3"
+
+  if link_matches "$link_path" "$target_path"; then
+    return 0
+  fi
+
+  if ! path_exists "$link_path"; then
+    return 0
+  fi
+
+  if [ "$link_kind" = "skill" ]; then
+    if [ -L "$link_path" ] && [ ! -e "$link_path" ]; then
+      return 0
+    fi
+    if [ -d "$link_path" ] && diff -qr "$link_path" "$target_path" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    fail "skill conflict at $link_path; review it before replacing the managed skill"
+  fi
+
+  if [ "$link_kind" = "extension" ]; then
+    if [ -L "$link_path" ] && [ ! -e "$link_path" ]; then
+      return 0
+    fi
+    if [ -f "$link_path" ] && cmp -s "$link_path" "$target_path"; then
+      return 0
+    fi
+
+    fail "extension conflict at $link_path; review it before replacing the managed extension"
+  fi
+}
+
+create_backup_root() {
+  if [ -n "$BACKUP_ROOT" ]; then
+    return 0
+  fi
+
+  if [ -L "$STATE_ROOT" ] || [ -L "$STATE_ROOT/backups" ]; then
+    fail "state and backup directories must not be symlinks"
+  fi
+  mkdir -p "$STATE_ROOT/backups"
+  STATE_ROOT="$(cd "$STATE_ROOT" && pwd -P)"
+  MANAGED_LINKS_FILE="$STATE_ROOT/managed-links.tsv"
+  validate_private_directory "$STATE_ROOT"
+  validate_private_directory "$STATE_ROOT/backups"
+  BACKUP_ROOT="$(mktemp -d "$STATE_ROOT/backups/$(date '+%Y%m%d-%H%M%S')-XXXXXX")"
+}
+
+backup_existing_path() {
+  local original_path="$1"
+  local backup_path
+
+  create_backup_root
+  [ "$(device_id "$(dirname "$original_path")")" = "$(device_id "$BACKUP_ROOT")" ] || fail "backup must be on the same filesystem as $original_path"
+  backup_path="$BACKUP_ROOT$original_path"
+  mkdir -p "$(dirname "$backup_path")"
+  LAST_BACKUP_PATH="$backup_path"
+  BACKUP_ORIGINALS+=("$original_path")
+  BACKUP_PATHS+=("$backup_path")
+  mv "$original_path" "$backup_path"
+  printf '%s\t%s\n' "$original_path" "$backup_path" >> "$BACKUP_ROOT/manifest.tsv"
+}
+
+install_link() {
+  local link_path="$1"
+  local target_path="$2"
+  local link_kind="$3"
+  local existing_was_broken=0
+
+  if link_matches "$link_path" "$target_path"; then
+    printf 'OK    %s\n' "$link_path"
+    return 0
+  fi
+
+  if path_exists "$link_path"; then
+    if [ -L "$link_path" ] && [ ! -e "$link_path" ]; then
+      existing_was_broken=1
+    fi
+    if [ "$link_kind" = "skill" ] && [ "$existing_was_broken" -eq 0 ] && ! diff -qr "$link_path" "$target_path" >/dev/null 2>&1; then
+      fail "skill changed after preflight at $link_path"
+    fi
+    if [ "$link_kind" = "extension" ] && [ "$existing_was_broken" -eq 0 ] && ! cmp -s "$link_path" "$target_path"; then
+      fail "extension changed after preflight at $link_path"
+    fi
+    backup_existing_path "$link_path"
+  fi
+
+  mkdir -p "$(dirname "$link_path")"
+  CREATED_LINKS+=("$link_path")
+  CREATED_TARGETS+=("$target_path")
+  ln -s "$target_path" "$link_path"
+  printf 'LINK  %s -> %s\n' "$link_path" "$target_path"
+}
+
+rollback() {
+  local index
+  local rollback_failed=0
+
+  trap - ERR HUP INT TERM
+  set +e
+  if [ "$ROLLBACK_ACTIVE" -ne 1 ]; then
+    return 0
+  fi
+
+  printf '%s\n' 'Installation failed; rolling back this run.' >&2
+
+  if [ "$MANIFEST_WRITTEN" -eq 1 ]; then
+    if [ "$MANIFEST_HAD_ORIGINAL" -eq 1 ] && [ -f "$MANIFEST_BACKUP_PATH" ]; then
+      if ! mv "$MANIFEST_BACKUP_PATH" "$MANAGED_LINKS_FILE"; then
+        printf 'Rollback could not restore %s\n' "$MANAGED_LINKS_FILE" >&2
+        rollback_failed=1
+      fi
+    elif [ "$MANIFEST_HAD_ORIGINAL" -eq 0 ] && [ -f "$MANAGED_LINKS_FILE" ] && [ ! -L "$MANAGED_LINKS_FILE" ]; then
+      if ! rm "$MANAGED_LINKS_FILE"; then
+        printf 'Rollback could not remove %s\n' "$MANAGED_LINKS_FILE" >&2
+        rollback_failed=1
+      fi
+    fi
+  elif [ -n "$MANIFEST_BACKUP_PATH" ] && [ -f "$MANIFEST_BACKUP_PATH" ]; then
+    rm "$MANIFEST_BACKUP_PATH" || rollback_failed=1
+  fi
+
+  index=${#CREATED_LINKS[@]}
+  while [ "$index" -gt 0 ]; do
+    index=$((index - 1))
+    if link_matches "${CREATED_LINKS[$index]}" "${CREATED_TARGETS[$index]}"; then
+      if ! rm "${CREATED_LINKS[$index]}"; then
+        printf 'Rollback could not remove %s\n' "${CREATED_LINKS[$index]}" >&2
+        rollback_failed=1
+      fi
+    fi
+  done
+
+  index=${#BACKUP_ORIGINALS[@]}
+  while [ "$index" -gt 0 ]; do
+    index=$((index - 1))
+    mkdir -p "$(dirname "${BACKUP_ORIGINALS[$index]}")"
+    if ! path_exists "${BACKUP_ORIGINALS[$index]}"; then
+      if ! mv "${BACKUP_PATHS[$index]}" "${BACKUP_ORIGINALS[$index]}"; then
+        printf 'Rollback could not restore %s\n' "${BACKUP_ORIGINALS[$index]}" >&2
+        rollback_failed=1
+      fi
+    fi
+  done
+
+  if [ "$rollback_failed" -ne 0 ]; then
+    printf 'Rollback was incomplete; recover remaining items from %s\n' "$BACKUP_ROOT" >&2
+  fi
+}
+
+case "${1:-}" in
+  "") ;;
+  --dry-run) MODE="dry-run" ;;
+  --check) MODE="check" ;;
+  --help|-h) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  usage >&2
+  exit 2
+fi
+
+[ -d "$HARNESS_USER_HOME" ] || fail "user home does not exist: $HARNESS_USER_HOME"
+HARNESS_USER_HOME="$(cd "$HARNESS_USER_HOME" && pwd -P)"
+case "$STATE_ROOT" in
+  /*) ;;
+  *) fail "state root must be an absolute path: $STATE_ROOT" ;;
+esac
+case "$STATE_ROOT/" in
+  */../*) fail "state root must not contain '..' path components: $STATE_ROOT" ;;
+esac
+validate_existing_state
+
+[ -f "$INSTRUCTIONS_FILE" ] || fail "missing $INSTRUCTIONS_FILE"
+[ ! -L "$INSTRUCTIONS_FILE" ] || fail "instructions file must not be a symlink: $INSTRUCTIONS_FILE"
+[ -d "$SKILLS_DIR" ] || fail "missing $SKILLS_DIR"
+[ ! -L "$SKILLS_DIR" ] || fail "skills directory must not be a symlink: $SKILLS_DIR"
+[ -d "$EXTENSIONS_DIR" ] || fail "missing $EXTENSIONS_DIR"
+[ ! -L "$EXTENSIONS_DIR" ] || fail "extensions directory must not be a symlink: $EXTENSIONS_DIR"
+[ -f "$PI_PREWALK_EXTENSION" ] || fail "missing $PI_PREWALK_EXTENSION"
+[ ! -L "$PI_PREWALK_EXTENSION" ] || fail "Pi Prewalk extension must not be a symlink: $PI_PREWALK_EXTENSION"
+[ -f "$PREWALK_CORE_MODULE" ] || fail "missing $PREWALK_CORE_MODULE"
+[ ! -L "$PREWALK_CORE_MODULE" ] || fail "Prewalk core module must not be a symlink: $PREWALK_CORE_MODULE"
+skill_root_symlink="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type l -print -quit)" || fail "could not validate $SKILLS_DIR"
+[ -z "$skill_root_symlink" ] || fail "shared skill entries must not be symlinks: $skill_root_symlink"
+
+LINK_PATHS=()
+LINK_TARGETS=()
+LINK_KINDS=()
+SKILL_LISTING=""
+
+add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"
+add_link "$HARNESS_USER_HOME/.codex/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
+add_link "$HARNESS_USER_HOME/.pi/agent/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
+add_link "$HARNESS_USER_HOME/.pi/agent/extensions/ai-harness-prewalk.ts" "$PI_PREWALK_EXTENSION" "extension"
+add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-core.mjs" "$PREWALK_CORE_MODULE" "extension"
+
+SKILL_LISTING="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)" || fail "could not enumerate shared skills in $SKILLS_DIR"
+while IFS= read -r skill_dir; do
+  [ -n "$skill_dir" ] || continue
+  [ -f "$skill_dir/SKILL.md" ] || fail "shared skill is missing SKILL.md: $skill_dir"
+  skill_symlink="$(find "$skill_dir" -type l -print -quit)" || fail "could not validate shared skill: $skill_dir"
+  [ -z "$skill_symlink" ] || fail "shared skills must not contain symlinks: $skill_symlink"
+  skill_name="$(basename "$skill_dir")"
+  [[ "$skill_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || fail "invalid shared skill directory name: $skill_name"
+  add_link "$HARNESS_USER_HOME/.claude/skills/$skill_name" "$skill_dir" "skill"
+  add_link "$HARNESS_USER_HOME/.agents/skills/$skill_name" "$skill_dir" "skill"
+  add_link "$HARNESS_USER_HOME/.codex/skills/$skill_name" "$skill_dir" "skill"
+done <<< "$SKILL_LISTING"
+load_stale_links
+
+if [ "$MODE" = "check" ]; then
+  check_failed=0
+  for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+    if link_matches "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}"; then
+      printf 'OK    %s\n' "${LINK_PATHS[$index]}"
+    else
+      printf 'DRIFT %s (expected %s)\n' "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}" >&2
+      check_failed=1
+    fi
+  done
+  if [ ${#STALE_LINKS[@]} -gt 0 ]; then
+    for stale_path in "${STALE_LINKS[@]}"; do
+      printf 'DRIFT %s (skill was removed from the harness)\n' "$stale_path" >&2
+      check_failed=1
+    done
+  fi
+  exit "$check_failed"
+fi
+
+for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+  preflight_link "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}" "${LINK_KINDS[$index]}"
+done
+
+if [ "$MODE" = "dry-run" ]; then
+  for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+    if link_matches "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}"; then
+      printf 'OK    %s\n' "${LINK_PATHS[$index]}"
+    elif path_exists "${LINK_PATHS[$index]}"; then
+      printf 'BACKUP %s\n' "${LINK_PATHS[$index]}"
+      printf 'LINK   %s -> %s\n' "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}"
+    else
+      printf 'LINK   %s -> %s\n' "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}"
+    fi
+  done
+  if [ ${#STALE_LINKS[@]} -gt 0 ]; then
+    for stale_path in "${STALE_LINKS[@]}"; do
+      printf 'BACKUP %s\n' "$stale_path"
+      printf 'REMOVE %s\n' "$stale_path"
+    done
+  fi
+  exit 0
+fi
+
+ROLLBACK_ACTIVE=1
+trap 'status=$?; rollback; exit "$status"' ERR
+trap 'rollback; exit 129' HUP
+trap 'rollback; exit 130' INT
+trap 'rollback; exit 143' TERM
+
+if [ ${#STALE_LINKS[@]} -gt 0 ]; then
+  for ((index = 0; index < ${#STALE_LINKS[@]}; index++)); do
+    link_matches "${STALE_LINKS[$index]}" "${STALE_TARGETS[$index]}" || fail "stale skill link changed after preflight: ${STALE_LINKS[$index]}"
+    backup_existing_path "${STALE_LINKS[$index]}"
+    printf 'REMOVE %s\n' "${STALE_LINKS[$index]}"
+  done
+fi
+
+for ((index = 0; index < ${#LINK_PATHS[@]}; index++)); do
+  install_link "${LINK_PATHS[$index]}" "${LINK_TARGETS[$index]}" "${LINK_KINDS[$index]}"
+done
+
+write_managed_links
+
+ROLLBACK_ACTIVE=0
+trap - ERR HUP INT TERM
+
+if [ -n "$MANIFEST_BACKUP_PATH" ] && [ -f "$MANIFEST_BACKUP_PATH" ]; then
+  rm "$MANIFEST_BACKUP_PATH"
+fi
+
+if [ -n "$BACKUP_ROOT" ]; then
+  printf 'Backup: %s\n' "$BACKUP_ROOT"
+fi
+printf '%s\n' 'AI Harness setup is complete.'

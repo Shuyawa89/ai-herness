@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+command -v pi >/dev/null 2>&1 || {
+  printf 'pi is not available on PATH. Install Pi before running Prewalk.\n' >&2
+  exit 127
+}
+
+exec pi "$@"

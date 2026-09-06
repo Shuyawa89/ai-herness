@@ -1,0 +1,15 @@
+.DS_Store
+*.swp
+*.tmp
+.temp-local/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+auth.json
+credentials.json
+node_modules/
+.venv/
+__pycache__/
+/.skill-lock.json
