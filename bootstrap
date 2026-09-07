@@ -481,3 +481,7 @@ if [ -n "$BACKUP_ROOT" ]; then
   printf 'Backup: %s\n' "$BACKUP_ROOT"
 fi
 printf '%s\n' 'AI Harness setup is complete.'
+
+if ! path_exists "$HARNESS_USER_HOME/.pi/agent/prewalk.json"; then
+  printf '%s\n' 'Note: ~/.pi/agent/prewalk.json not found. Until you create it, /prewalk needs explicit model arguments (/prewalk <first> <second>). See README "Pi Prewalk".'
+fi

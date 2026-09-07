@@ -60,7 +60,8 @@ test_fresh_install_backup_and_idempotency() {
   printf '%s\n' 'legacy instructions' > "$user_home/.claude/CLAUDE.md"
   cp -R "$REPO_ROOT/skills/explore" "$user_home/.claude/skills/explore"
 
-  run_bootstrap "$user_home" "$state_root" >/dev/null
+  run_bootstrap "$user_home" "$state_root" > "$case_root/install-output.txt"
+  grep -Fq 'Note: ~/.pi/agent/prewalk.json not found' "$case_root/install-output.txt" || fail 'missing prewalk config reminder'
   run_bootstrap "$user_home" "$state_root" --check >/dev/null
 
   assert_link "$user_home/.claude/CLAUDE.md" "$REPO_ROOT/AGENTS.md"
@@ -74,6 +75,11 @@ test_fresh_install_backup_and_idempotency() {
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
   [ ! -e "$user_home/.codex/skills/tdd-workflow" ] || fail 'non-allowlisted skill was installed'
+
+  mkdir -p "$user_home/.pi/agent"
+  printf '{ "first_model": "provider-a/model-a", "second_model": "provider-b/model-b" }\n' > "$user_home/.pi/agent/prewalk.json"
+  run_bootstrap "$user_home" "$state_root" > "$case_root/second-output.txt"
+  grep -Fq 'prewalk.json not found' "$case_root/second-output.txt" && fail 'reminder shown although prewalk config exists'
 
   backup_count_before="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   run_bootstrap "$user_home" "$state_root" >/dev/null
