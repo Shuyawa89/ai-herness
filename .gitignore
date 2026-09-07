@@ -8,6 +8,7 @@
 *.key
 *.pem
 auth.json
+prewalk.json
 credentials.json
 node_modules/
 .venv/

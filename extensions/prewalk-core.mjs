@@ -52,14 +52,14 @@ export function parsePrewalkArgs(args, config) {
 
   if (parts.length === 0) {
     if (!config) {
-      throw new Error("Prewalk needs a local Prewalk config (~/.pi/agent/prewalk.json) or explicit model arguments")
+      throw new Error("Prewalk needs a local Prewalk config (prewalk.json in the harness directory) or explicit model arguments")
     }
     return { firstModel: config.firstModel, secondModel: config.secondModel }
   }
 
   if (parts.length === 1) {
     if (!config) {
-      throw new Error("Prewalk needs a local Prewalk config (~/.pi/agent/prewalk.json) or explicit model arguments")
+      throw new Error("Prewalk needs a local Prewalk config (prewalk.json in the harness directory) or explicit model arguments")
     }
     return { firstModel: config.firstModel, secondModel: validateModelRef(parts[0]) }
   }

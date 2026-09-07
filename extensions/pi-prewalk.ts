@@ -1,9 +1,12 @@
-import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { createPrewalkState, parsePrewalkArgs, parsePrewalkConfig, PREWALK_PLAN_PATH } from "./prewalk-core.mjs"
 
 type PrewalkConfig = { firstModel: string; secondModel: string }
+
+const harnessRoot = dirname(dirname(realpathSync(fileURLToPath(import.meta.url))))
 
 function findModel(ctx: ExtensionContext, modelRef: string) {
   const [provider, ...modelParts] = modelRef.split("/")
@@ -15,7 +18,7 @@ function getModelRef(model: { provider: string; id: string }) {
 }
 
 function readLocalConfig(): PrewalkConfig | undefined {
-  const configPath = join(getAgentDir(), "prewalk.json")
+  const configPath = join(harnessRoot, "prewalk.json")
   if (!existsSync(configPath)) return undefined
   return parsePrewalkConfig(JSON.parse(readFileSync(configPath, "utf8")))
 }
@@ -147,7 +150,7 @@ export default function (pi: ExtensionAPI) {
       try {
         localConfig = readLocalConfig()
       } catch (error) {
-        ctx.ui.notify(`Prewalk: invalid local config (~/.pi/agent/prewalk.json): ${error instanceof Error ? error.message : String(error)}`, "error")
+        ctx.ui.notify(`Prewalk: invalid local config (prewalk.json in the harness directory): ${error instanceof Error ? error.message : String(error)}`, "error")
         return
       }
 

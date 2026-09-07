@@ -76,7 +76,7 @@ Some skill installers maintain their own lock files outside this repository and 
 
 Prewalk uses a frontier model (the first model) for exploration, a concrete plan, and one real code mutation, then switches to a cheaper worker model (the second model) in the **same Pi session**.
 
-The route is machine-local and lives outside Git in `~/.pi/agent/prewalk.json`. Create it whenever you adopt Prewalk; the recommended timing is before the first task you want to hand off. Until it exists, `/prewalk` needs explicit model arguments, and `./bootstrap` prints a reminder on each run while the file is missing:
+The route is machine-local and lives outside Git as `prewalk.json` in the harness directory root (gitignored). Create it whenever you adopt Prewalk; the recommended timing is before the first task you want to hand off. Until it exists, `/prewalk` needs explicit model arguments, and `./bootstrap` prints a reminder on each run while the file is missing:
 
 ```json
 {

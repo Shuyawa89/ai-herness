@@ -76,7 +76,7 @@ bootstrap は管理リンクの manifest を `${XDG_STATE_HOME:-~/.local/state}/
 
 Prewalk は、frontier モデル（first model）に調査・具体計画・1 回の実コード変更を行わせた後、**同じ Pi session 内で**より安価な worker モデル（second model）へ切り替える。
 
-ルートはマシン固有の設定で、Git の外にある `~/.pi/agent/prewalk.json` に置く。作成するタイミングは任意だが、Prewalk を使いたい最初のタスクの前が目安。ファイルが存在しない間は `/prewalk` に明示的な引数が必要で、`./bootstrap` はファイルが見つからないたびにリマインダーを出す:
+ルートはマシン固有の設定で、Git の外にある harness ディレクトリ直下の `prewalk.json` に置く（`.gitignore` 対象）。作成するタイミングは任意だが、Prewalk を使いたい最初のタスクの前が目安。ファイルが存在しない間は `/prewalk` に明示的な引数が必要で、`./bootstrap` はファイルが見つからないたびにリマインダーを出す:
 
 ```json
 {

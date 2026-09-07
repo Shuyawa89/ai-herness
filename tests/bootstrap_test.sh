@@ -41,48 +41,53 @@ expect_status() {
 }
 
 run_bootstrap() {
-  local user_home="$1"
-  local state_root="$2"
-  shift 2
-  env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$BOOTSTRAP" "$@"
+  local bootstrap="$1"
+  local user_home="$2"
+  local state_root="$3"
+  shift 3
+  env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$bootstrap" "$@"
 }
 
 test_fresh_install_backup_and_idempotency() {
   local case_root="$TEST_ROOT/fresh"
+  local copied_repo="$case_root/repo"
   local user_home="$case_root/home"
   local state_root="$case_root/state"
+  local canonical_repo
   local canonical_home
   local backup_count_before
   local backup_count_after
 
-  mkdir -p "$user_home/.claude/skills"
+  mkdir -p "$case_root" "$user_home/.claude/skills"
+  cp -R "$REPO_ROOT" "$copied_repo"
+  rm -f "$copied_repo/prewalk.json"
+  canonical_repo="$(cd "$copied_repo" && pwd -P)"
   canonical_home="$(cd "$user_home" && pwd -P)"
   printf '%s\n' 'legacy instructions' > "$user_home/.claude/CLAUDE.md"
   cp -R "$REPO_ROOT/skills/explore" "$user_home/.claude/skills/explore"
 
-  run_bootstrap "$user_home" "$state_root" > "$case_root/install-output.txt"
-  grep -Fq 'Note: ~/.pi/agent/prewalk.json not found' "$case_root/install-output.txt" || fail 'missing prewalk config reminder'
-  run_bootstrap "$user_home" "$state_root" --check >/dev/null
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" > "$case_root/install-output.txt"
+  grep -Fq 'Note: prewalk.json not found' "$case_root/install-output.txt" || fail 'missing prewalk config reminder'
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" --check >/dev/null
 
-  assert_link "$user_home/.claude/CLAUDE.md" "$REPO_ROOT/AGENTS.md"
-  assert_link "$user_home/.codex/AGENTS.md" "$REPO_ROOT/AGENTS.md"
-  assert_link "$user_home/.pi/agent/AGENTS.md" "$REPO_ROOT/AGENTS.md"
-  assert_link "$user_home/.pi/agent/extensions/ai-harness-prewalk.ts" "$REPO_ROOT/extensions/pi-prewalk.ts"
-  assert_link "$user_home/.pi/agent/extensions/prewalk-core.mjs" "$REPO_ROOT/extensions/prewalk-core.mjs"
-  assert_link "$user_home/.claude/skills/explore" "$REPO_ROOT/skills/explore"
-  assert_link "$user_home/.codex/skills/explore" "$REPO_ROOT/skills/explore"
+  assert_link "$user_home/.claude/CLAUDE.md" "$canonical_repo/AGENTS.md"
+  assert_link "$user_home/.codex/AGENTS.md" "$canonical_repo/AGENTS.md"
+  assert_link "$user_home/.pi/agent/AGENTS.md" "$canonical_repo/AGENTS.md"
+  assert_link "$user_home/.pi/agent/extensions/ai-harness-prewalk.ts" "$canonical_repo/extensions/pi-prewalk.ts"
+  assert_link "$user_home/.pi/agent/extensions/prewalk-core.mjs" "$canonical_repo/extensions/prewalk-core.mjs"
+  assert_link "$user_home/.claude/skills/explore" "$canonical_repo/skills/explore"
+  assert_link "$user_home/.codex/skills/explore" "$canonical_repo/skills/explore"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
   [ ! -e "$user_home/.codex/skills/tdd-workflow" ] || fail 'non-allowlisted skill was installed'
 
-  mkdir -p "$user_home/.pi/agent"
-  printf '{ "first_model": "provider-a/model-a", "second_model": "provider-b/model-b" }\n' > "$user_home/.pi/agent/prewalk.json"
-  run_bootstrap "$user_home" "$state_root" > "$case_root/second-output.txt"
+  printf '{ "first_model": "provider-a/model-a", "second_model": "provider-b/model-b" }\n' > "$copied_repo/prewalk.json"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" > "$case_root/second-output.txt"
   grep -Fq 'prewalk.json not found' "$case_root/second-output.txt" && fail 'reminder shown although prewalk config exists'
 
   backup_count_before="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
-  run_bootstrap "$user_home" "$state_root" >/dev/null
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
   backup_count_after="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   [ "$backup_count_before" = "$backup_count_after" ] || fail 'idempotent run created another backup'
 }
@@ -95,7 +100,7 @@ test_dry_run_has_no_side_effects() {
 
   mkdir -p "$user_home/.claude"
   printf '%s\n' 'legacy instructions' > "$user_home/.claude/CLAUDE.md"
-  run_bootstrap "$user_home" "$state_root" --dry-run > "$output"
+  run_bootstrap "$BOOTSTRAP" "$user_home" "$state_root" --dry-run > "$output"
 
   [ -f "$user_home/.claude/CLAUDE.md" ] || fail 'dry-run replaced the instruction file'
   [ ! -L "$user_home/.claude/CLAUDE.md" ] || fail 'dry-run created an instruction link'
@@ -112,7 +117,7 @@ test_skill_conflict_stops_preflight() {
   mkdir -p "$user_home/.agents/skills/explore"
   cp -R "$REPO_ROOT/skills/worker/." "$user_home/.agents/skills/explore/"
 
-  expect_status 1 run_bootstrap "$user_home" "$state_root" --dry-run
+  expect_status 1 run_bootstrap "$BOOTSTRAP" "$user_home" "$state_root" --dry-run
   [ ! -e "$user_home/.claude/CLAUDE.md" ] || fail 'conflict preflight made a change'
   [ ! -e "$state_root" ] || fail 'conflict preflight created a backup'
 }
@@ -126,7 +131,7 @@ test_mid_install_failure_rolls_back() {
   printf '%s\n' 'legacy instructions' > "$user_home/.claude/CLAUDE.md"
   printf '%s\n' 'blocks directory creation' > "$user_home/.codex"
 
-  expect_status 1 run_bootstrap "$user_home" "$state_root"
+  expect_status 1 run_bootstrap "$BOOTSTRAP" "$user_home" "$state_root"
   [ -f "$user_home/.claude/CLAUDE.md" ] || fail 'rollback did not restore the instruction file'
   [ ! -L "$user_home/.claude/CLAUDE.md" ] || fail 'rollback left a managed link'
   grep -Fq 'legacy instructions' "$user_home/.claude/CLAUDE.md" || fail 'rollback restored wrong content'
@@ -201,7 +206,7 @@ test_broken_skill_link_is_repaired() {
 
   mkdir -p "$user_home/.agents/skills"
   ln -s "$case_root/old-clone/skills/explore" "$user_home/.agents/skills/explore"
-  run_bootstrap "$user_home" "$state_root" >/dev/null
+  run_bootstrap "$BOOTSTRAP" "$user_home" "$state_root" >/dev/null
   assert_link "$user_home/.agents/skills/explore" "$REPO_ROOT/skills/explore"
 }
 
