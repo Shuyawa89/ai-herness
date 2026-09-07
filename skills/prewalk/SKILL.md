@@ -35,25 +35,7 @@ Start Pi normally from the project being worked on:
 pi
 ```
 
-Then arm the default route:
-
-```text
-/prewalk
-```
-
-Default route:
-
-```text
-openai-codex/gpt-5.6-sol -> openrouter/z-ai/glm-5.3-flash
-```
-
-Optional routes:
-
-```text
-/prewalk openrouter/z-ai/glm-5.3-flash
-/prewalk <frontier-provider/model> <worker-provider/model>
-/prewalk off
-```
+Arm the route before the task. The route comes from the machine-local config `~/.pi/agent/prewalk.json`; override it for one invocation with `/prewalk <second>` or `/prewalk <first> <second>`, and disarm with `/prewalk off`.
 
 The Pi extension blocks source-code writes before a plan, blocks a second code
 mutation, and permits only read-oriented built-ins plus `edit` and `write` in

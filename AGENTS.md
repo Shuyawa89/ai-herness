@@ -33,6 +33,8 @@ For substantial work, identify one current role. Do not combine roles in one res
 - **Critic**: requests to review or verify. Use the `critic` Skill and review from evidence, not intent.
 - **Promoter**: requests to communicate verified work. Use the `promoter` Skill only after a Critic pass.
 
+Start substantial responses by naming the selected role (for example, "Worker で開始します"). When the role changes mid-task, announce the switch (for example, "Critic に切り替えます") before acting as the new role.
+
 A new request does not resume an unfinished plan unless the user explicitly refers to its plan file. Human approval is required at the Planner gate and before declaring completion.
 
 ## Development

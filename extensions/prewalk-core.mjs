@@ -1,12 +1,10 @@
-export const DEFAULT_FRONTIER_MODEL = "openai-codex/gpt-5.6-sol"
-export const DEFAULT_WORKER_MODEL = "openrouter/z-ai/glm-5.3-flash"
 export const PREWALK_PLAN_PATH = ".temp-local/workflow-plan.md"
 
 const FRONTIER_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"])
 
 function validateModelRef(value) {
   const [provider, ...modelParts] = value.split("/")
-  if (!provider || modelParts.length === 0 || modelParts.some((part) => !part)) {
+  if (/\s/.test(value) || !provider || modelParts.length === 0 || modelParts.some((part) => !part)) {
     throw new Error(`Expected a provider/model ID, received "${value}"`)
   }
   return value
@@ -29,7 +27,23 @@ function splitPath(path) {
   return normalized
 }
 
-export function parsePrewalkArgs(args) {
+export function parsePrewalkConfig(settings) {
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+    throw new Error("Local Prewalk config must be a JSON object")
+  }
+
+  const { first_model: firstModel, second_model: secondModel } = settings
+  if (typeof firstModel !== "string" || firstModel.trim() === "") {
+    throw new Error("Local Prewalk config requires first_model as a provider/model ID")
+  }
+  if (typeof secondModel !== "string" || secondModel.trim() === "") {
+    throw new Error("Local Prewalk config requires second_model as a provider/model ID")
+  }
+
+  return { firstModel: validateModelRef(firstModel.trim()), secondModel: validateModelRef(secondModel.trim()) }
+}
+
+export function parsePrewalkArgs(args, config) {
   const parts = args.trim() === "" ? [] : args.trim().split(/\s+/)
 
   if (parts.length > 2) {
@@ -37,14 +51,20 @@ export function parsePrewalkArgs(args) {
   }
 
   if (parts.length === 0) {
-    return { frontier: DEFAULT_FRONTIER_MODEL, worker: DEFAULT_WORKER_MODEL }
+    if (!config) {
+      throw new Error("Prewalk needs a local Prewalk config (~/.pi/agent/prewalk.json) or explicit model arguments")
+    }
+    return { firstModel: config.firstModel, secondModel: config.secondModel }
   }
 
   if (parts.length === 1) {
-    return { frontier: DEFAULT_FRONTIER_MODEL, worker: validateModelRef(parts[0]) }
+    if (!config) {
+      throw new Error("Prewalk needs a local Prewalk config (~/.pi/agent/prewalk.json) or explicit model arguments")
+    }
+    return { firstModel: config.firstModel, secondModel: validateModelRef(parts[0]) }
   }
 
-  return { frontier: validateModelRef(parts[0]), worker: validateModelRef(parts[1]) }
+  return { firstModel: validateModelRef(parts[0]), secondModel: validateModelRef(parts[1]) }
 }
 
 export function isScratchPath(path) {

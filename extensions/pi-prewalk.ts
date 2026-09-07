@@ -1,5 +1,9 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { createPrewalkState, parsePrewalkArgs, PREWALK_PLAN_PATH } from "./prewalk-core.mjs"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { createPrewalkState, parsePrewalkArgs, parsePrewalkConfig, PREWALK_PLAN_PATH } from "./prewalk-core.mjs"
+
+type PrewalkConfig = { firstModel: string; secondModel: string }
 
 function findModel(ctx: ExtensionContext, modelRef: string) {
   const [provider, ...modelParts] = modelRef.split("/")
@@ -10,29 +14,35 @@ function getModelRef(model: { provider: string; id: string }) {
   return `${model.provider}/${model.id}`
 }
 
+function readLocalConfig(): PrewalkConfig | undefined {
+  const configPath = join(getAgentDir(), "prewalk.json")
+  if (!existsSync(configPath)) return undefined
+  return parsePrewalkConfig(JSON.parse(readFileSync(configPath, "utf8")))
+}
+
 export default function (pi: ExtensionAPI) {
   const state = createPrewalkState()
 
-  async function arm(config: { frontier: string; worker: string }, ctx: ExtensionContext) {
-    const frontier = findModel(ctx, config.frontier)
-    const worker = findModel(ctx, config.worker)
-    if (!frontier) {
-      ctx.ui.notify(`Prewalk: frontier model "${config.frontier}" is unavailable`, "error")
+  async function arm(config: PrewalkConfig, ctx: ExtensionContext) {
+    const first = findModel(ctx, config.firstModel)
+    const second = findModel(ctx, config.secondModel)
+    if (!first) {
+      ctx.ui.notify(`Prewalk: first model "${config.firstModel}" is unavailable`, "error")
       return false
     }
-    if (!worker) {
-      ctx.ui.notify(`Prewalk: worker model "${config.worker}" is unavailable`, "error")
+    if (!second) {
+      ctx.ui.notify(`Prewalk: second model "${config.secondModel}" is unavailable`, "error")
       return false
     }
 
-    const switched = await pi.setModel(frontier)
+    const switched = await pi.setModel(first)
     if (!switched) {
-      ctx.ui.notify(`Prewalk: could not authenticate frontier model "${config.frontier}"`, "error")
+      ctx.ui.notify(`Prewalk: could not authenticate first model "${config.firstModel}"`, "error")
       return false
     }
 
     state.arm(config)
-    ctx.ui.notify(`Prewalk armed: ${config.frontier} -> ${config.worker}`, "info")
+    ctx.ui.notify(`Prewalk armed: ${config.firstModel} -> ${config.secondModel}`, "info")
     return true
   }
 
@@ -50,7 +60,7 @@ export default function (pi: ExtensionAPI) {
     const config = state.config()
     if (!config) return
 
-    const expected = state.stage() === "frontier" ? config.frontier : config.worker
+    const expected = state.stage() === "frontier" ? config.firstModel : config.secondModel
     if (getModelRef(event.model) === expected) return
 
     state.disarm()
@@ -67,17 +77,17 @@ export default function (pi: ExtensionAPI) {
     const config = state.config()
     if (!config || !state.beginHandoff()) return
 
-    const worker = findModel(ctx, config.worker)
-    if (!worker) {
+    const second = findModel(ctx, config.secondModel)
+    if (!second) {
       state.completeHandoff(false)
-      ctx.ui.notify(`Prewalk: worker model "${config.worker}" is unavailable`, "error")
+      ctx.ui.notify(`Prewalk: second model "${config.secondModel}" is unavailable`, "error")
       return
     }
 
-    const switched = await pi.setModel(worker)
+    const switched = await pi.setModel(second)
     state.completeHandoff(switched)
     if (!switched) {
-      ctx.ui.notify(`Prewalk: could not authenticate worker model "${config.worker}"`, "error")
+      ctx.ui.notify(`Prewalk: could not authenticate second model "${config.secondModel}"`, "error")
       return
     }
 
@@ -85,14 +95,14 @@ export default function (pi: ExtensionAPI) {
       customType: "prewalk-handoff",
       content: [
         "PREWALK HANDOFF",
-        `The frontier model completed planning and the first code mutation. You are now the worker model (${config.worker}).`,
+        `The frontier model completed planning and the first code mutation. You are now the worker model (${config.secondModel}).`,
         `Continue from the existing conversation and ${PREWALK_PLAN_PATH}. Do not repeat broad exploration. Implement and verify the remaining work, updating the plan as items are completed. Keep scratch files in .temp-local/.`,
       ].join("\n\n"),
       display: true,
-      details: { frontier: config.frontier, worker: config.worker },
+      details: { firstModel: config.firstModel, secondModel: config.secondModel },
     }, { deliverAs: "steer", triggerTurn: true })
 
-    ctx.ui.notify(`Prewalk: switched to ${config.worker}`, "info")
+    ctx.ui.notify(`Prewalk: switched to ${config.secondModel}`, "info")
   })
 
   pi.on("before_agent_start", (event) => {
@@ -114,7 +124,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand("prewalk", {
-    description: "Frontier plans and makes one edit, then GLM worker continues. /prewalk [worker] | [frontier worker] | off",
+    description: "Frontier plans and makes one edit, then the configured second model continues. /prewalk [second] | [first second] | off",
     handler: async (args, ctx) => {
       if (args.trim() === "off") {
         state.disarm()
@@ -122,8 +132,27 @@ export default function (pi: ExtensionAPI) {
         return
       }
 
+      // Fully explicit arguments need no local config, so a broken prewalk.json
+      // cannot block a one-off override.
+      if (args.trim().split(/\s+/).length >= 2) {
+        try {
+          await arm(parsePrewalkArgs(args), ctx)
+        } catch (error) {
+          ctx.ui.notify(`Prewalk: ${error instanceof Error ? error.message : String(error)}`, "error")
+        }
+        return
+      }
+
+      let localConfig: PrewalkConfig | undefined
       try {
-        await arm(parsePrewalkArgs(args), ctx)
+        localConfig = readLocalConfig()
+      } catch (error) {
+        ctx.ui.notify(`Prewalk: invalid local config (~/.pi/agent/prewalk.json): ${error instanceof Error ? error.message : String(error)}`, "error")
+        return
+      }
+
+      try {
+        await arm(parsePrewalkArgs(args, localConfig), ctx)
       } catch (error) {
         ctx.ui.notify(`Prewalk: ${error instanceof Error ? error.message : String(error)}`, "error")
       }

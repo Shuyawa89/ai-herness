@@ -27,8 +27,9 @@ Critic -> Promoter (only when useful) -> [human completes]
 
 The Planner writes `.temp-local/workflow-plan.md` and stops for approval. The
 Worker follows that approved plan. For a substantial Worker task in Pi, the
-user may run `/prewalk`; it uses `gpt-5.6-sol` for the plan and first source
-change, then hands the same session to `z-ai/glm-5.3-flash`.
+user may run `/prewalk`; the frontier model (first model in the machine-local
+Prewalk config) makes the plan and first source change, then hands the same
+session to the cheaper second model.
 
 Do not load every role Skill preemptively. A new request starts in the role its
 language indicates; it resumes a previous plan only when the user names that

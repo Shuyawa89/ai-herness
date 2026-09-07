@@ -74,10 +74,15 @@ Some skill installers maintain their own lock files outside this repository and 
 
 ## Pi Prewalk
 
-Prewalk uses a frontier model for exploration, a concrete plan, and one real code mutation, then switches to a cheaper worker model in the **same Pi session**. The default route is:
+Prewalk uses a frontier model (the first model) for exploration, a concrete plan, and one real code mutation, then switches to a cheaper worker model (the second model) in the **same Pi session**.
 
-```text
-openai-codex/gpt-5.6-sol -> openrouter/z-ai/glm-5.3-flash
+The route is machine-local and lives outside Git in `~/.pi/agent/prewalk.json`:
+
+```json
+{
+  "first_model": "<provider/first-model>",
+  "second_model": "<provider/second-model>"
+}
 ```
 
 From the target project directory, start Pi normally:
@@ -86,11 +91,11 @@ From the target project directory, start Pi normally:
 pi
 ```
 
-Then run `/prewalk` before submitting the task. Bootstrap installs the reviewed extension globally as a symlink, so ordinary Pi sessions have the command. Use `/prewalk <worker>` or `/prewalk <frontier> <worker>` to override the route, and `/prewalk off` to disarm it.
+Then run `/prewalk` before submitting the task. It resolves the route from the local config; `/prewalk <second>` or `/prewalk <first> <second>` overrides it for one invocation, and `/prewalk off` disarms it.
 
 The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
 
-`skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. It is shared with Claude Code and Codex; Pi supplies the automatic Prewalk model handoff.
+`skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. Only the Skill allowlist at the top of `bootstrap` is linked into each tool; add a name there to distribute another skill. The harness ships no environment-specific skills or model choices.
 
 The current request's language selects one role and one Skill; the harness does not force a remembered `/workflow` command vocabulary. Planner approval and final completion remain conversational human gates. For substantial Pi implementation work, run `/prewalk` before the task to use the frontier-to-worker handoff.
 

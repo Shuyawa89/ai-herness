@@ -74,10 +74,15 @@ bootstrap は管理リンクの manifest を `${XDG_STATE_HOME:-~/.local/state}/
 
 ## Pi Prewalk
 
-Prewalk は、frontier モデルに調査・具体計画・1 回の実コード変更を行わせた後、**同じ Pi session 内で**より安価な worker モデルへ切り替える。デフォルトのルート:
+Prewalk は、frontier モデル（first model）に調査・具体計画・1 回の実コード変更を行わせた後、**同じ Pi session 内で**より安価な worker モデル（second model）へ切り替える。
 
-```text
-openai-codex/gpt-5.6-sol -> openrouter/z-ai/glm-5.3-flash
+ルートはマシン固有の設定で、Git の外にある `~/.pi/agent/prewalk.json` に置く:
+
+```json
+{
+  "first_model": "<provider/first-model>",
+  "second_model": "<provider/second-model>"
+}
 ```
 
 対象プロジェクトのディレクトリから、普通に Pi を起動する:
@@ -86,11 +91,13 @@ openai-codex/gpt-5.6-sol -> openrouter/z-ai/glm-5.3-flash
 pi
 ```
 
-タスクを入力する前に `/prewalk` を実行する。bootstrap がレビュー済み extension をグローバルに symlink するため、通常の Pi session でコマンドが使える。ルートを変えるには `/prewalk <worker>` または `/prewalk <frontier> <worker>`、解除は `/prewalk off`。
+タスクを入力する前に `/prewalk` を実行する。ルートはローカル設定から解決され、`/prewalk <second>` または `/prewalk <first> <second>` で 1 回だけ上書き、`/prewalk off` で解除できる。
+
 
 選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に計画と scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
 
-`skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。Claude Code と Codex でも共有され、Pi は自動の Prewalk モデルハンドオフを提供する。
+`skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。配布する Skill は `bootstrap` 冒頭の allowlist のみ。追加したい skill はそこに名前を加える。ハーネスは環境固有の skill もモデル選択も Git に含まない。
+
 
 現在の依頼の言葉が役割と Skill を一つ選ぶ。`/workflow` のようなコマンド語彙は強制しない。Planner の承認と完了判断は会話の中で人間が行う gate であり、実装フェーズへ切り替える。
 

@@ -376,7 +376,17 @@ skill_root_symlink="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type l -print 
 LINK_PATHS=()
 LINK_TARGETS=()
 LINK_KINDS=()
-SKILL_LISTING=""
+# Skills distributed by this harness. Only allowlisted skills are linked into
+# each tool; other directories under skills/ stay repository-only.
+SKILL_ALLOWLIST=(
+  explore
+  planning
+  worker
+  critic
+  promoter
+  prewalk
+  harness-workflow
+)
 
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"
 add_link "$HARNESS_USER_HOME/.codex/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
@@ -384,18 +394,17 @@ add_link "$HARNESS_USER_HOME/.pi/agent/AGENTS.md" "$INSTRUCTIONS_FILE" "instruct
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/ai-harness-prewalk.ts" "$PI_PREWALK_EXTENSION" "extension"
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-core.mjs" "$PREWALK_CORE_MODULE" "extension"
 
-SKILL_LISTING="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)" || fail "could not enumerate shared skills in $SKILLS_DIR"
-while IFS= read -r skill_dir; do
-  [ -n "$skill_dir" ] || continue
-  [ -f "$skill_dir/SKILL.md" ] || fail "shared skill is missing SKILL.md: $skill_dir"
+for skill_name in "${SKILL_ALLOWLIST[@]}"; do
+  [[ "$skill_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || fail "invalid allowlisted skill name: $skill_name"
+  skill_dir="$SKILLS_DIR/$skill_name"
+  [ -d "$skill_dir" ] || fail "allowlisted skill is missing from the repository: $skill_dir"
+  [ -f "$skill_dir/SKILL.md" ] || fail "allowlisted skill is missing SKILL.md: $skill_dir"
   skill_symlink="$(find "$skill_dir" -type l -print -quit)" || fail "could not validate shared skill: $skill_dir"
   [ -z "$skill_symlink" ] || fail "shared skills must not contain symlinks: $skill_symlink"
-  skill_name="$(basename "$skill_dir")"
-  [[ "$skill_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || fail "invalid shared skill directory name: $skill_name"
   add_link "$HARNESS_USER_HOME/.claude/skills/$skill_name" "$skill_dir" "skill"
   add_link "$HARNESS_USER_HOME/.agents/skills/$skill_name" "$skill_dir" "skill"
   add_link "$HARNESS_USER_HOME/.codex/skills/$skill_name" "$skill_dir" "skill"
-done <<< "$SKILL_LISTING"
+done
 load_stale_links
 
 if [ "$MODE" = "check" ]; then

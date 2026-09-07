@@ -1,37 +1,40 @@
 import assert from "node:assert/strict"
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { execFileSync } from "node:child_process"
 import {
-  DEFAULT_FRONTIER_MODEL,
-  DEFAULT_WORKER_MODEL,
   createPrewalkState,
   isPlanPath,
   isScratchPath,
   parsePrewalkArgs,
+  parsePrewalkConfig,
 } from "../extensions/prewalk-core.mjs"
 
 const repoRoot = resolve(import.meta.dirname, "..")
-
-function testDefaults() {
-  assert.deepEqual(parsePrewalkArgs(""), {
-    frontier: DEFAULT_FRONTIER_MODEL,
-    worker: DEFAULT_WORKER_MODEL,
-  })
+const testConfig = {
+  firstModel: "provider-a/model-a",
+  secondModel: "provider-b/model-b",
 }
 
-function testArguments() {
-  assert.deepEqual(parsePrewalkArgs("openrouter/z-ai/glm-5.3-flash"), {
-    frontier: DEFAULT_FRONTIER_MODEL,
-    worker: "openrouter/z-ai/glm-5.3-flash",
+function testConfigAndArguments() {
+  assert.deepEqual(parsePrewalkConfig({
+    first_model: testConfig.firstModel,
+    second_model: testConfig.secondModel,
+  }), testConfig)
+  assert.deepEqual(parsePrewalkArgs("", testConfig), testConfig)
+  assert.deepEqual(parsePrewalkArgs("provider-c/model-c", testConfig), {
+    firstModel: testConfig.firstModel,
+    secondModel: "provider-c/model-c",
   })
-  assert.deepEqual(parsePrewalkArgs("openai-codex/gpt-5.6-sol openrouter/z-ai/glm-5.3-flash"), {
-    frontier: "openai-codex/gpt-5.6-sol",
-    worker: "openrouter/z-ai/glm-5.3-flash",
+  assert.deepEqual(parsePrewalkArgs("provider-c/model-c provider-d/model-d"), {
+    firstModel: "provider-c/model-c",
+    secondModel: "provider-d/model-d",
   })
-  assert.throws(() => parsePrewalkArgs("one two three"), /expects zero, one, or two model IDs/)
-  assert.throws(() => parsePrewalkArgs("invalid"), /provider\/model/)
+  assert.throws(() => parsePrewalkArgs(""), /local Prewalk config/)
+  assert.throws(() => parsePrewalkArgs("one two three", testConfig), /expects zero, one, or two model IDs/)
+  assert.throws(() => parsePrewalkArgs("invalid", testConfig), /provider\/model/)
+  assert.throws(() => parsePrewalkConfig({ first_model: "provider/model" }), /second_model/)
 }
 
 function testPlanPaths() {
@@ -45,7 +48,7 @@ function testPlanPaths() {
 
 function testHandoffState() {
   const state = createPrewalkState()
-  state.arm({ frontier: DEFAULT_FRONTIER_MODEL, worker: DEFAULT_WORKER_MODEL })
+  state.arm(testConfig)
 
   assert.match(state.observeToolCall("code-before-plan", "write", { path: "src/app.ts" }).reason, /plan file first/)
   assert.match(state.observeToolCall("shell", "bash", { command: "printf bad > src/app.ts" }).reason, /only read, grep, find, ls, edit, and write/)
@@ -70,7 +73,7 @@ function testHandoffState() {
 
 function testFailedWritesDoNotAdvanceState() {
   const state = createPrewalkState()
-  state.arm({ frontier: DEFAULT_FRONTIER_MODEL, worker: DEFAULT_WORKER_MODEL })
+  state.arm(testConfig)
 
   state.observeToolCall("failed-plan", "write", { path: ".temp-local/workflow-plan.md" })
   state.observeToolResult("failed-plan", true)
@@ -104,8 +107,7 @@ function testLauncher() {
 
 assert.equal(existsSync(join(repoRoot, "skills", "prewalk", "SKILL.md")), true)
 assert.equal(existsSync(join(repoRoot, "skills", "harness-workflow", "SKILL.md")), true)
-testDefaults()
-testArguments()
+testConfigAndArguments()
 testPlanPaths()
 testHandoffState()
 testFailedWritesDoNotAdvanceState()
