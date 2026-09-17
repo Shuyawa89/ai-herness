@@ -77,6 +77,12 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.pi/agent/extensions/prewalk-core.mjs" "$canonical_repo/extensions/prewalk-core.mjs"
   assert_link "$user_home/.claude/skills/explore" "$canonical_repo/skills/explore"
   assert_link "$user_home/.codex/skills/explore" "$canonical_repo/skills/explore"
+  assert_link "$user_home/.claude/skills/understand" "$canonical_repo/skill-variants/explicit/understand"
+  assert_link "$user_home/.codex/skills/understand" "$canonical_repo/skills/understand"
+  assert_link "$user_home/.agents/skills/understand" "$canonical_repo/skill-variants/explicit/understand"
+  assert_link "$user_home/.claude/skills/design-check" "$canonical_repo/skill-variants/explicit/design-check"
+  assert_link "$user_home/.codex/skills/design-check" "$canonical_repo/skills/design-check"
+  assert_link "$user_home/.agents/skills/design-check" "$canonical_repo/skill-variants/explicit/design-check"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
@@ -90,6 +96,56 @@ test_fresh_install_backup_and_idempotency() {
   run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
   backup_count_after="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   [ "$backup_count_before" = "$backup_count_after" ] || fail 'idempotent run created another backup'
+}
+
+test_explicit_skill_variants_match_sources() {
+  local skill_name
+  local source_file
+  local variant_file
+  local invocation_flag_count
+  local frontmatter_invocation_flag_count
+  local openai_config
+  local implicit_invocation_policy_count
+
+  for skill_name in understand design-check; do
+    source_file="$REPO_ROOT/skills/$skill_name/SKILL.md"
+    variant_file="$REPO_ROOT/skill-variants/explicit/$skill_name/SKILL.md"
+    openai_config="$REPO_ROOT/skills/$skill_name/agents/openai.yaml"
+
+    [ -f "$variant_file" ] || fail "missing explicit skill variant: $variant_file"
+    invocation_flag_count="$(awk '$0 == "disable-model-invocation: true" { count++ } END { print count + 0 }' "$variant_file")"
+    [ "$invocation_flag_count" -eq 1 ] || fail "expected exactly one disable-model-invocation flag: $variant_file"
+    frontmatter_invocation_flag_count="$(awk '
+      NR == 1 {
+        if ($0 != "---") exit 2
+        in_frontmatter = 1
+        next
+      }
+      in_frontmatter && $0 == "---" {
+        found_end = 1
+        exit
+      }
+      in_frontmatter && $0 == "disable-model-invocation: true" { count++ }
+      END {
+        if (!found_end) exit 3
+        print count + 0
+      }
+    ' "$variant_file")" || fail "invalid YAML frontmatter: $variant_file"
+    [ "$frontmatter_invocation_flag_count" -eq 1 ] || fail "disable-model-invocation flag must be in the first YAML frontmatter: $variant_file"
+    awk '$0 != "disable-model-invocation: true"' "$variant_file" | cmp "$source_file" - >/dev/null || fail "explicit skill variant differs from source: $skill_name"
+
+    [ -f "$openai_config" ] || fail "missing OpenAI skill config: $openai_config"
+    implicit_invocation_policy_count="$(awk '
+      $0 == "policy:" {
+        in_policy = 1
+        next
+      }
+      in_policy && /^[^[:space:]]/ { in_policy = 0 }
+      in_policy && $0 == "  allow_implicit_invocation: false" { count++ }
+      END { print count + 0 }
+    ' "$openai_config")"
+    [ "$implicit_invocation_policy_count" -eq 1 ] || fail "OpenAI skill config must disable implicit invocation: $openai_config"
+  done
 }
 
 test_dry_run_has_no_side_effects() {
@@ -228,6 +284,10 @@ test_source_root_symlinks_are_rejected() {
   local instruction_repo="$case_root/instruction-repo"
   local skills_repo="$case_root/skills-repo"
   local entry_repo="$case_root/entry-repo"
+  local variant_parent_repo="$case_root/variant-parent-repo"
+  local external_variant_parent="$case_root/external-skill-variants"
+  local variant_root_repo="$case_root/variant-root-repo"
+  local variant_entry_repo="$case_root/variant-entry-repo"
   local user_home="$case_root/home"
 
   mkdir -p "$case_root" "$user_home"
@@ -245,6 +305,21 @@ test_source_root_symlinks_are_rejected() {
   cp -R "$REPO_ROOT" "$entry_repo"
   ln -s planning "$entry_repo/skills/explore"
   expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/entry-state" "$entry_repo/bootstrap" --dry-run
+
+  cp -R "$REPO_ROOT" "$variant_parent_repo"
+  mv "$variant_parent_repo/skill-variants" "$external_variant_parent"
+  ln -s "$external_variant_parent" "$variant_parent_repo/skill-variants"
+  expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/variant-parent-state" "$variant_parent_repo/bootstrap" --dry-run
+
+  cp -R "$REPO_ROOT" "$variant_root_repo"
+  mv "$variant_root_repo/skill-variants/explicit" "$variant_root_repo/skill-variants/explicit.real"
+  ln -s explicit.real "$variant_root_repo/skill-variants/explicit"
+  expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/variant-root-state" "$variant_root_repo/bootstrap" --dry-run
+
+  cp -R "$REPO_ROOT" "$variant_entry_repo"
+  mv "$variant_entry_repo/skill-variants/explicit/understand" "$variant_entry_repo/skill-variants/explicit/understand.real"
+  ln -s design-check "$variant_entry_repo/skill-variants/explicit/understand"
+  expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/variant-entry-state" "$variant_entry_repo/bootstrap" --dry-run
 }
 
 test_stale_cleanup_failure_rolls_back() {
@@ -280,6 +355,7 @@ test_cli_contract() {
   expect_status 2 "$BOOTSTRAP" --dry-run --check
 }
 
+test_explicit_skill_variants_match_sources
 test_fresh_install_backup_and_idempotency
 test_dry_run_has_no_side_effects
 test_skill_conflict_stops_preflight

@@ -6,6 +6,8 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 INSTRUCTIONS_FILE="$SCRIPT_DIR/AGENTS.md"
 SKILLS_DIR="$SCRIPT_DIR/skills"
+SKILL_VARIANTS_DIR="$SCRIPT_DIR/skill-variants"
+EXPLICIT_SKILL_VARIANTS_DIR="$SKILL_VARIANTS_DIR/explicit"
 EXTENSIONS_DIR="$SCRIPT_DIR/extensions"
 PI_PREWALK_EXTENSION="$EXTENSIONS_DIR/pi-prewalk.ts"
 PREWALK_CORE_MODULE="$EXTENSIONS_DIR/prewalk-core.mjs"
@@ -110,6 +112,18 @@ add_link() {
   LINK_PATHS+=("$1")
   LINK_TARGETS+=("$2")
   LINK_KINDS+=("$3")
+}
+
+skill_has_explicit_variant() {
+  local candidate="$1"
+  local explicit_skill
+
+  for explicit_skill in "${EXPLICIT_SKILL_ALLOWLIST[@]}"; do
+    if [ "$explicit_skill" = "$candidate" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 link_is_currently_managed() {
@@ -364,6 +378,10 @@ validate_existing_state
 [ ! -L "$INSTRUCTIONS_FILE" ] || fail "instructions file must not be a symlink: $INSTRUCTIONS_FILE"
 [ -d "$SKILLS_DIR" ] || fail "missing $SKILLS_DIR"
 [ ! -L "$SKILLS_DIR" ] || fail "skills directory must not be a symlink: $SKILLS_DIR"
+[ -d "$SKILL_VARIANTS_DIR" ] || fail "missing $SKILL_VARIANTS_DIR"
+[ ! -L "$SKILL_VARIANTS_DIR" ] || fail "skill variants directory must not be a symlink: $SKILL_VARIANTS_DIR"
+[ -d "$EXPLICIT_SKILL_VARIANTS_DIR" ] || fail "missing $EXPLICIT_SKILL_VARIANTS_DIR"
+[ ! -L "$EXPLICIT_SKILL_VARIANTS_DIR" ] || fail "explicit skill variants directory must not be a symlink: $EXPLICIT_SKILL_VARIANTS_DIR"
 [ -d "$EXTENSIONS_DIR" ] || fail "missing $EXTENSIONS_DIR"
 [ ! -L "$EXTENSIONS_DIR" ] || fail "extensions directory must not be a symlink: $EXTENSIONS_DIR"
 [ -f "$PI_PREWALK_EXTENSION" ] || fail "missing $PI_PREWALK_EXTENSION"
@@ -372,6 +390,8 @@ validate_existing_state
 [ ! -L "$PREWALK_CORE_MODULE" ] || fail "Prewalk core module must not be a symlink: $PREWALK_CORE_MODULE"
 skill_root_symlink="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type l -print -quit)" || fail "could not validate $SKILLS_DIR"
 [ -z "$skill_root_symlink" ] || fail "shared skill entries must not be symlinks: $skill_root_symlink"
+variant_root_symlink="$(find "$EXPLICIT_SKILL_VARIANTS_DIR" -mindepth 1 -maxdepth 1 -type l -print -quit)" || fail "could not validate $EXPLICIT_SKILL_VARIANTS_DIR"
+[ -z "$variant_root_symlink" ] || fail "explicit skill variant entries must not be symlinks: $variant_root_symlink"
 
 LINK_PATHS=()
 LINK_TARGETS=()
@@ -386,6 +406,12 @@ SKILL_ALLOWLIST=(
   promoter
   prewalk
   harness-workflow
+  understand
+  design-check
+)
+EXPLICIT_SKILL_ALLOWLIST=(
+  understand
+  design-check
 )
 
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"
@@ -401,8 +427,16 @@ for skill_name in "${SKILL_ALLOWLIST[@]}"; do
   [ -f "$skill_dir/SKILL.md" ] || fail "allowlisted skill is missing SKILL.md: $skill_dir"
   skill_symlink="$(find "$skill_dir" -type l -print -quit)" || fail "could not validate shared skill: $skill_dir"
   [ -z "$skill_symlink" ] || fail "shared skills must not contain symlinks: $skill_symlink"
-  add_link "$HARNESS_USER_HOME/.claude/skills/$skill_name" "$skill_dir" "skill"
-  add_link "$HARNESS_USER_HOME/.agents/skills/$skill_name" "$skill_dir" "skill"
+  claude_pi_skill_dir="$skill_dir"
+  if skill_has_explicit_variant "$skill_name"; then
+    claude_pi_skill_dir="$EXPLICIT_SKILL_VARIANTS_DIR/$skill_name"
+    [ -d "$claude_pi_skill_dir" ] || fail "explicit skill variant is missing from the repository: $claude_pi_skill_dir"
+    [ -f "$claude_pi_skill_dir/SKILL.md" ] || fail "explicit skill variant is missing SKILL.md: $claude_pi_skill_dir"
+    variant_symlink="$(find "$claude_pi_skill_dir" -type l -print -quit)" || fail "could not validate explicit skill variant: $claude_pi_skill_dir"
+    [ -z "$variant_symlink" ] || fail "explicit skill variants must not contain symlinks: $variant_symlink"
+  fi
+  add_link "$HARNESS_USER_HOME/.claude/skills/$skill_name" "$claude_pi_skill_dir" "skill"
+  add_link "$HARNESS_USER_HOME/.agents/skills/$skill_name" "$claude_pi_skill_dir" "skill"
   add_link "$HARNESS_USER_HOME/.codex/skills/$skill_name" "$skill_dir" "skill"
 done
 load_stale_links
