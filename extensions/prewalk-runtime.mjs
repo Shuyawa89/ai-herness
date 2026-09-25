@@ -23,7 +23,7 @@ import {
 } from "./prewalk-core.mjs"
 
 const FRONTIER_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write", "prewalk_checkpoint", "prewalk_validate"])
-const ROUTABLE_STAGES = new Set(["frontier_plan", "awaiting_approval", "frontier_initial", "cheap", "frontier_review", "frontier_review_pending", "cheap_pending"])
+const ROUTABLE_STAGES = new Set(["frontier_plan", "awaiting_approval", "awaiting_human_approval", "awaiting_final_approval", "frontier_initial", "cheap", "frontier_review", "frontier_review_pending", "cheap_pending"])
 
 function safeClone(value) { return structuredClone(value) }
 function commandKey(command, args = []) { return [String(command).trim(), ...args.map(String)].join(" ").replace(/\s+/g, " ").trim() }
@@ -317,7 +317,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
       if (!task) return { active: false, stage: "idle" }
       return { active: !["complete", "stopped"].includes(task.stage), stage: task.stage, role: task.role, runId: task.runId, currentPhaseId: task.currentPhaseId, counters: { failure: task.failure_count, escalation: task.escalation_count, retry: task.retry_count, step: task.step_count }, stopReason: task.stopReason, budgetShortfall: task.budgetShortfall }
     },
-    async start({ runId, sessionId, workspace = deps.cwd ?? process.cwd(), goal, frontierModel, cheapModel, baseline } = {}) {
+    async start({ runId, sessionId, workspace = deps.cwd ?? process.cwd(), goal, frontierModel, cheapModel, displayLanguage = "en", baseline } = {}) {
       return serialize(async () => {
         if (typeof goal !== "string" || !goal.trim() || !runId || !sessionId || !frontierModel || !cheapModel) return { ok: false, reason: "missing-run-identity-or-goal" }
         const root = resolve(workspace)
@@ -327,6 +327,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
           if (!isPlainObject(initial)) throw new Error("Worktree snapshot is not an object")
         } catch { return { ok: false, reason: "worktree-snapshot-failed" } }
         task = createTaskState({ runId, sessionId, workspace: root, goal: goal.trim(), frontierModel, cheapModel, config: limits, baseline: initial })
+        task.displayLanguage = displayLanguage === "ja" ? "ja" : "en"
         completedTools = []
         task.snapshot = { ...initial }
         task.startedAt = now()
@@ -366,7 +367,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
       return serialize(async () => {
         if (!task || task.stage !== "paused" || !ROUTABLE_STAGES.has(task.resumeStage)) return { ok: false, reason: "not-resumable" }
         task.stage = task.resumeStage
-        task.role = task.stage.includes("frontier") || task.stage === "awaiting_approval" ? "frontier" : "cheap"
+        task.role = ["awaiting_human_approval", "awaiting_final_approval"].includes(task.stage) ? "none" : task.stage.includes("frontier") || task.stage === "awaiting_approval" ? "frontier" : "cheap"
         delete task.resumeStage
         const ok = await persist("resumed")
         if (!ok) return { ok: false, reason: task.stopReason }
