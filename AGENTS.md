@@ -80,5 +80,6 @@ A new request does not resume an unfinished plan unless the user explicitly refe
 ## Completion
 
 - Run applicable tests, type checks, linting, and builds.
-- Report what changed, what was verified, and any remaining limitations.
+- Report any required user decision first, then changes, evidence against acceptance criteria, and remaining risks or unverified items. Distinguish verified facts from assumptions; do not treat missing verification as a pass.
+- Before asking for human completion approval, provide a review packet: a concise summary of the outcome and changed paths, passing and missing checks, and concrete items for the user to inspect or try with the expected result. State which remaining risks or boundary decisions need their judgment, then ask them to approve completion or request revisions. Never ask for approval without saying what it covers.
 - Consider the task complete only when requirements are met and relevant checks pass.

@@ -99,16 +99,25 @@ The Pi variants are linked into `~/.agents/skills`, which Pi reads directly.
 
 ## Pi Prewalk
 
-Prewalk uses a frontier model (the first model) for exploration, a concrete plan, and one real code mutation, then switches to a cheaper worker model (the second model) in the **same Pi session**.
+Prewalk is a versioned Pi extension that hands off from frontier (Frontier) exploration, planning, and one representative initial code change to a cheaper model (Cheap) in the **same Pi session**. Deterministic routing can return to Frontier for reviews during implementation: a pass unlocks the next phase, while a repair returns Cheap to that phase. This automatic routing is Pi-specific; it does not automatically switch models in Claude Code or Codex.
 
 The route is machine-local and lives outside Git as `prewalk.json` in the harness directory root (gitignored). Create it whenever you adopt Prewalk; the recommended timing is before the first task you want to hand off. Until it exists, `/prewalk` needs explicit model arguments, and `./bootstrap` prints a reminder on each run while the file is missing:
 
 ```json
 {
-  "first_model": "<provider/first-model>",
-  "second_model": "<provider/second-model>"
+  "frontier_model": "<provider/frontier-model>",
+  "cheap_model": "<provider/cheap-model>",
+  "failure_threshold": 2,
+  "tool_churn_threshold": 6,
+  "max_escalations": 8,
+  "max_retries": 6,
+  "max_steps": 100,
+  "milestone_review": true,
+  "final_review": true
 }
 ```
+
+The legacy `first_model` / `second_model` names remain supported as aliases for `frontier_model` / `cheap_model`. Conflicting values for an alias pair are rejected. Existing one-invocation overrides, `/prewalk <second>` and `/prewalk <first> <second>`, remain supported.
 
 From the target project directory, start Pi normally:
 
@@ -118,7 +127,19 @@ pi
 
 Then run `/prewalk` before submitting the task. It resolves the route from the local config; `/prewalk <second>` or `/prewalk <first> <second>` overrides it for one invocation, and `/prewalk off` disarms it.
 
-The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
+The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes a human-facing plan view and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
+
+### Prewalk lifecycle and boundaries
+
+- Frontier first inspects repository instructions, README files, CI/build configuration, and tests to propose the scope, meaningful phases, acceptance criteria, and appropriate checks for each phase. Users do not need to enumerate files or test commands up front. A human approves the initial plan and hard boundary before source changes begin.
+- The **hard boundary** is the approved outcome, constraints, protected areas, and permitted scope. **Soft estimates** include expected files or steps; Frontier may refine them during work as long as the hard boundary is unchanged. Expanding the hard boundary requires a proposal and explicit human approval.
+- A failed Git worktree observation stops routing rather than pretending the tree is clean. For phases without runnable checks, the plan names concrete repository artifact paths; `prewalk_checkpoint` `progress.evidence` observes their existence. Existence alone is not proof of correctness. Cheap implements, reports TODO progress, and uses ordinary tools. With the default `milestone_review: true`, Frontier automatically reviews a phase at a tool-batch boundary when its TODOs are reported ready, dependencies are satisfied, and required validation has fresh, observed results. Readiness schedules a review; it does not establish semantic correctness. A Frontier pass advances to the next phase; a repair returns Cheap to the same phase. When the last-phase and final-review conditions are ready together, they are coalesced into one visit.
+- There are six routing trigger types: (1) a detectable plan deviation, (2) consecutive failures of the same identified validation check, (3) soft-scope expansion within the approved boundary, (4) no-progress tool churn, (5) phase readiness from TODOs and fresh validation results, and (6) final-review readiness. Failure and churn triggers have finite thresholds. Defaults: `failure_threshold: 2`, `tool_churn_threshold: 6`, `max_escalations: 8`, `max_retries: 6`, `max_steps: 100`, `milestone_review: true`, and `final_review: true`. Reaching a limit stops explicitly; required reviews are not silently skipped.
+- A successful built-in `bash` invocation exactly matching a planned check can provide fresh validation evidence. Failed built-in `bash` results lack a trustworthy numeric exit code; use `prewalk_validate` for structured failures and bounded diagnostic output. Ordinary `bash` and other normal tools remain available; there is no blanket command allowlist. Known violations are blocked by targeted preflight checks, and shell effects are observed after the tool batch and may trigger review. This cannot prevent every side effect in advance; Prewalk is neither automatic rollback nor an OS sandbox. Existing approval requirements for destructive operations still apply.
+- Cheap requests a hard-boundary expansion by routing to Frontier; Frontier proposes it and the human approves it. `/prewalk status` shows the run state; `/prewalk approve <proposal-id>` approves the displayed current proposal (for example, the plan, a hard-boundary change, or final completion). `/prewalk resume` explicitly resumes a paused run, and `/prewalk off` disarms routing. Terminal stopped runs cannot be resumed; start a new task after addressing the stop reason. Human approval remains the completion gate even after a review passes.
+- Non-context session custom entries are the canonical structured TaskState and audit record. While routing is active, `.temp-local/workflow-plan.md` is a human-facing view generated from that state, not an independent source of authority. Escalation retains the same session trajectory while rebuilding bounded relevant context. There is no guarantee that a provider switch preserves a model's private internal state.
+
+Claude Code and Codex can follow the same planning and approval principles manually, but they do not have automatic routing, and a separate model session is not guaranteed to share the same conversation trajectory.
 
 `skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. Only the Skill allowlist at the top of `bootstrap` is linked into each tool; add a name there to distribute another skill. Canonical sources are used by default, while explicit-only skills use the tool-specific sources described above. The harness ships no environment-specific skills or model choices.
 

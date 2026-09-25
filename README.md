@@ -99,16 +99,25 @@ Pi 向けの variant は `~/.agents/skills` にリンクされ、Pi がそこか
 
 ## Pi Prewalk
 
-Prewalk は、frontier モデル（first model）に調査・具体計画・1 回の実コード変更を行わせた後、**同じ Pi session 内で**より安価な worker モデル（second model）へ切り替える。
+Prewalk は Pi の versioned extension が、frontier モデル（Frontier）による調査・計画・代表的な最初のコード変更から cheap モデル（Cheap）へ、**同じ Pi session 内で**引き継ぐ仕組み。作業中は決定的な条件に基づいて Frontier のレビューへ戻り、合格なら次の phase、不足があれば同じ phase の修正へ Cheap を戻す。これは Pi の routing 機能であり、Claude Code や Codex で自動的なモデル切り替えを行うものではない。
 
 ルートはマシン固有の設定で、Git の外にある harness ディレクトリ直下の `prewalk.json` に置く（`.gitignore` 対象）。作成するタイミングは任意だが、Prewalk を使いたい最初のタスクの前が目安。ファイルが存在しない間は `/prewalk` に明示的な引数が必要で、`./bootstrap` はファイルが見つからないたびにリマインダーを出す:
 
 ```json
 {
-  "first_model": "<provider/first-model>",
-  "second_model": "<provider/second-model>"
+  "frontier_model": "<provider/frontier-model>",
+  "cheap_model": "<provider/cheap-model>",
+  "failure_threshold": 2,
+  "tool_churn_threshold": 6,
+  "max_escalations": 8,
+  "max_retries": 6,
+  "max_steps": 100,
+  "milestone_review": true,
+  "final_review": true
 }
 ```
+
+旧名 `first_model` / `second_model` も引き続き使える。旧名と `frontier_model` / `cheap_model` はそれぞれ互換 alias で、同じ設定で競合する値を指定するとエラーになる。既存の `/prewalk <second>` と `/prewalk <first> <second>` による一回限りの上書きも維持する。
 
 対象プロジェクトのディレクトリから、普通に Pi を起動する:
 
@@ -119,7 +128,19 @@ pi
 タスクを入力する前に `/prewalk` を実行する。ルートはローカル設定から解決され、`/prewalk <second>` または `/prewalk <first> <second>` で 1 回だけ上書き、`/prewalk off` で解除できる。
 
 
-選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に計画と scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
+選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に人間向けの計画ビューと scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
+
+### Prewalk の流れと境界
+
+- 最初に Frontier がリポジトリの指示、README、CI/build 設定、テストを調べ、作業範囲、意味のある phase、各 phase の受け入れ条件と適切な検証コマンドを提案する。利用者がファイルやテストコマンドをあらかじめ列挙する必要はない。初回計画と hard boundary は人間が承認してから、実コード変更を始める。
+- **Hard boundary** は承認済みの成果・制約・保護対象・許可範囲。**Soft estimates** は予想ファイル数や手順などの見積もりで、Frontier は hard boundary 内なら作業中に更新できる。hard boundary の拡張は提案と人間による明示承認が必要。
+- Git の作業ツリーの観測に失敗した場合は安全側に停止する。実行可能な検証がない phase は、計画にリポジトリ内の具体的な成果物パスを指定し、`prewalk_checkpoint` の `progress.evidence` で存在を観測する。成果物の存在は正しさを保証しない。Cheap は通常の作業を行い、TODO の進捗と通常のツール実行を記録する。`milestone_review: true`（既定）では phase の TODO が完了と報告され、依存条件と必要な検証の**新しい実結果**が揃うと、tool batch の区切りで Frontier の phase review が自動実行される。readiness はレビュー開始条件であり、意味的な正しさの保証ではない。Frontier の pass で次へ進み、repair なら同じ phase に戻る。最終 phase と最終レビューが同時に準備できた場合は一度のレビューにまとめる。
+- routing の6種類の trigger は、(1) 検出可能な計画逸脱、(2) 同じ識別済み検証の連続失敗、(3) 承認境界内での soft scope 拡大、(4) 進展のない tool churn、(5) TODO と新しい検証結果に基づく phase readiness、(6) 最終レビューの readiness。失敗回数や churn は有限の閾値で制限される。既定値は `failure_threshold: 2`、`tool_churn_threshold: 6`、`max_escalations: 8`、`max_retries: 6`、`max_steps: 100`、`milestone_review: true`、`final_review: true`。上限に達したら明示的に停止し、必要なレビューを黙って飛ばさない。
+- 計画上の検証コマンドと正確に一致する組み込み `bash` の成功は新しい検証結果として記録できる。失敗した `bash` には信頼できる数値の終了コードがないため、構造化された失敗結果と診断出力が必要な場合は `prewalk_validate` を使う。普通の `bash` と通常ツールは利用でき、コマンド allowlist による全面禁止は行わない。既知の逸脱は実行前の preflight で止め、shell の影響は実行後の batch で観測して必要ならレビューに回す。あらゆる副作用を事前防止する仕組みではなく、自動 rollback や OS sandbox でもない。既存の破壊的操作の承認ルールは引き続き適用される。
+- Cheap が hard-boundary の拡張を必要とする場合は Frontier へ戻し、Frontier の提案と人間の承認を経る。`/prewalk status` で状態を確認し、`/prewalk approve <proposal-id>` で表示された現在の提案（計画、hard-boundary 変更、最終完了など）を承認する。`/prewalk resume` は一時停止した run を明示的に再開し、`/prewalk off` は routing を解除する。上限到達などで終了した run は再開できず、新しいタスクとして開始する。レビュー pass の後も完了は人間の承認 gate のまま。
+- session の非コンテキスト custom entries が構造化 TaskState と監査記録の正本。routing 中の `.temp-local/workflow-plan.md` はそこから生成する人間向けビューで、編集しても独立した権限・状態の正本にはならない。Frontier への escalation では同じ session の履歴を保持しつつ、関連情報を上限付きで再構成する。provider をまたいでもモデル内部の状態まで保持される保証はない。
+
+Claude Code と Codex では同じ計画・承認の考え方を手動で適用できるが、自動 routing はなく、別 session のモデルが同じ会話 trajectory を持つとは限らない。
 
 `skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。配布する Skill は `bootstrap` 冒頭の allowlist のみ。追加したい skill はそこに名前を加える。通常は正本をそのまま配布し、明示呼び出し限定の Skill には上記の tool-specific source を使う。ハーネスは環境固有の skill もモデル選択も Git に含まない。
 

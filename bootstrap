@@ -11,6 +11,7 @@ EXPLICIT_SKILL_VARIANTS_DIR="$SKILL_VARIANTS_DIR/explicit"
 EXTENSIONS_DIR="$SCRIPT_DIR/extensions"
 PI_PREWALK_EXTENSION="$EXTENSIONS_DIR/pi-prewalk.ts"
 PREWALK_CORE_MODULE="$EXTENSIONS_DIR/prewalk-core.mjs"
+PREWALK_RUNTIME_MODULE="$EXTENSIONS_DIR/prewalk-runtime.mjs"
 HARNESS_USER_HOME="${AI_HARNESS_USER_HOME:-$HOME}"
 STATE_ROOT="${AI_HARNESS_STATE_ROOT:-${XDG_STATE_HOME:-$HARNESS_USER_HOME/.local/state}/ai-harness}"
 MANAGED_LINKS_FILE="$STATE_ROOT/managed-links.tsv"
@@ -143,6 +144,7 @@ load_stale_links() {
   local old_target
   local old_dir
   local old_name
+  local old_extension_target
 
   [ -f "$MANAGED_LINKS_FILE" ] || return 0
 
@@ -157,8 +159,18 @@ load_stale_links() {
         ;;
       "$HARNESS_USER_HOME/.pi/agent/extensions")
         case "$old_name" in
-          ai-harness-prewalk.ts|prewalk-core.mjs|workflow-core.mjs) ;;
+          ai-harness-prewalk.ts) old_extension_target="pi-prewalk.ts" ;;
+          prewalk-core.mjs) old_extension_target="prewalk-core.mjs" ;;
+          prewalk-runtime.mjs) old_extension_target="prewalk-runtime.mjs" ;;
+          workflow-core.mjs) old_extension_target="workflow-core.mjs" ;;
           *) continue ;;
+        esac
+        case "$old_target" in
+          /*/extensions/"$old_extension_target") ;;
+          *) continue ;;
+        esac
+        case "$old_target" in
+          *'/../'*|*'/..'|*'/./'*|*'/.' ) continue ;;
         esac
         ;;
       *) continue ;;
@@ -388,6 +400,8 @@ validate_existing_state
 [ ! -L "$PI_PREWALK_EXTENSION" ] || fail "Pi Prewalk extension must not be a symlink: $PI_PREWALK_EXTENSION"
 [ -f "$PREWALK_CORE_MODULE" ] || fail "missing $PREWALK_CORE_MODULE"
 [ ! -L "$PREWALK_CORE_MODULE" ] || fail "Prewalk core module must not be a symlink: $PREWALK_CORE_MODULE"
+[ -f "$PREWALK_RUNTIME_MODULE" ] || fail "missing $PREWALK_RUNTIME_MODULE"
+[ ! -L "$PREWALK_RUNTIME_MODULE" ] || fail "Prewalk runtime module must not be a symlink: $PREWALK_RUNTIME_MODULE"
 skill_root_symlink="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type l -print -quit)" || fail "could not validate $SKILLS_DIR"
 [ -z "$skill_root_symlink" ] || fail "shared skill entries must not be symlinks: $skill_root_symlink"
 variant_root_symlink="$(find "$EXPLICIT_SKILL_VARIANTS_DIR" -mindepth 1 -maxdepth 1 -type l -print -quit)" || fail "could not validate $EXPLICIT_SKILL_VARIANTS_DIR"
@@ -419,6 +433,7 @@ add_link "$HARNESS_USER_HOME/.codex/AGENTS.md" "$INSTRUCTIONS_FILE" "instruction
 add_link "$HARNESS_USER_HOME/.pi/agent/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/ai-harness-prewalk.ts" "$PI_PREWALK_EXTENSION" "extension"
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-core.mjs" "$PREWALK_CORE_MODULE" "extension"
+add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-runtime.mjs" "$PREWALK_RUNTIME_MODULE" "extension"
 
 for skill_name in "${SKILL_ALLOWLIST[@]}"; do
   [[ "$skill_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || fail "invalid allowlisted skill name: $skill_name"
