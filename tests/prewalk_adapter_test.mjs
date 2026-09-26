@@ -47,6 +47,7 @@ function setup() {
     abort() { aborts++ },
     mode: "print",
     hasUI: false,
+    thinkingLevel: "xhigh",
     ui: {
       notify(text, kind) { notices.push({ text, kind }) }, confirm: async () => true,
       setStatus(key, text) { statuses.push({ key, text }) },
@@ -96,7 +97,7 @@ test("Pi adapter registers tools/events; arming waits for a real task prompt", a
 
   assert.deepEqual([...mock.tools.keys()].sort(), ["prewalk_checkpoint", "prewalk_validate"])
   assert.ok(mock.commands.has("prewalk"))
-  for (const name of ["tool_call", "tool_result", "turn_start", "turn_end", "agent_before_settle", "session_start", "session_tree", "model_select", "context", "before_agent_start"]) assert.ok(mock.handlers.has(name), `missing ${name}`)
+  for (const name of ["tool_call", "tool_result", "turn_start", "turn_end", "agent_before_settle", "session_start", "session_tree", "model_select", "thinking_level_select", "context", "before_agent_start"]) assert.ok(mock.handlers.has(name), `missing ${name}`)
 
   await mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
   assert.equal(mock.appended.length, 0, "arming alone must not create a run")
@@ -233,6 +234,28 @@ test("interactive affirmative input approves only the previewed initial proposal
   }
 })
 
+test("a revision replaces the previewed initial plan and requires approval of the replacement", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal: initial, plan } = await enterPlanProposal(mock, "機能を実装して")
+  const revisionPrompt = { prompt: "テストを追加する計画に修正して", systemPromptOptions: { appendSystemPrompt: "" } }
+  await mock.handlers.get("before_agent_start")(revisionPrompt, mock.ctx)
+  assert.match(revisionPrompt.systemPromptOptions.appendSystemPrompt, /revised initial plan/)
+  const revisedPlan = { ...plan, hardContract: { ...plan.hardContract, outcome: "Implement feature with tests" } }
+  const revised = await mock.tools.get("prewalk_checkpoint").execute("revised-plan", { action: "submit_plan", plan: revisedPlan }, undefined, undefined, mock.ctx)
+
+  assert.equal(revised.details.ok, true)
+  const pending = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.proposals
+  assert.equal(pending.find((proposal) => proposal.id === initial.details.proposalId).status, "superseded")
+  assert.equal(pending.find((proposal) => proposal.id === revised.details.proposalId).status, "pending")
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  const approved = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
+  assert.equal(approved.initialApproval.proposalId, revised.details.proposalId)
+  assert.equal(approved.plan.hardContract.outcome, "Implement feature with tests")
+})
+
 test("affirmative words never approve injected, ambiguous, image, stale, or paused input", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
   const mock = setup()
@@ -354,16 +377,19 @@ test("English task retains English plan headings", async () => {
   assert.match(readFileSync(join(mock.ctx.cwd, ".temp-local/workflow-plan.md"), "utf8"), /## Phases/)
 })
 
-test("Pi status shows only the active stage highlighted, both models, and clears on off", async () => {
+test("Pi status uses compact model names, current thinking, and a single stage indicator", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
   const mock = setup()
   mock.ctx.mode = "tui"; mock.ctx.hasUI = true
   extension(mock.pi)
   await mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
-  assert.match(mock.statuses.at(-1).text, /F:mock\/frontier.*C:mock\/cheap/)
+  assert.match(mock.statuses.at(-1).text, /F:frontier.*C:cheap.*T:xhigh/)
   await mock.handlers.get("before_agent_start")({ prompt: "Implement", systemPromptOptions: { appendSystemPrompt: "" } }, mock.ctx)
-  assert.match(mock.statuses.at(-1).text, /<bold>Plan<\/bold>/)
+  assert.match(mock.statuses.at(-1).text, /^Prewalk: <accent><bold>Plan<\/bold><\/accent> →/)
   assert.match(mock.statuses.at(-1).text, /<dim>Build<\/dim>/)
+  mock.ctx.thinkingLevel = "high"
+  await mock.handlers.get("thinking_level_select")({ level: "high", previousLevel: "xhigh" }, mock.ctx)
+  assert.match(mock.statuses.at(-1).text, /T:high/)
   const planPath = join(mock.ctx.cwd, ".temp-local/workflow-plan.md")
   mock.handlers.get("tool_call")({ toolCallId: "write-plan", toolName: "write", input: { path: planPath } }, mock.ctx)
   mock.handlers.get("tool_result")({ toolCallId: "write-plan", toolName: "write", isError: false }, mock.ctx)

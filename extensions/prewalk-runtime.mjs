@@ -381,9 +381,17 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         if (input.eventId) task.seenEventIds.push(input.eventId)
         if (task.stage === "stopped" || task.stage === "complete" || task.stage === "paused") return { ok: false, reason: "run-not-active" }
         if (input.action === "submit_plan") {
-          if (task.stage !== "frontier_plan" || task.role !== "frontier") return { ok: false, reason: "plan-submission-not-allowed" }
+          const revising = task.stage === "awaiting_approval" && task.role === "frontier"
+          if (!revising && (task.stage !== "frontier_plan" || task.role !== "frontier")) return { ok: false, reason: "plan-submission-not-allowed" }
           const error = validatePlan(input.plan, task.workspace)
           if (error) return { ok: false, reason: error }
+          if (revising) {
+            const previous = task.proposals.find((proposal) => proposal.id === task.planProposalId && proposal.kind === "initial" && proposal.status === "pending")
+            if (!previous) return { ok: false, reason: "initial-plan-revision-requires-pending-proposal" }
+            const revised = safeClone(task)
+            revised.proposals.find((proposal) => proposal.id === previous.id).status = "superseded"
+            task = revised
+          }
           const proposal = createProposal(task, { kind: "initial", patch: input.plan, baseRevision: task.sourceRevision })
           task = proposal.state
           task.planProposalId = proposal.proposal.id
@@ -392,7 +400,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
           const visits = limits.milestoneReview ? input.plan.phases.length : (limits.finalReview ? 1 : 0)
           task.budgetShortfall = visits > limits.maxEscalations ? { required: visits, available: limits.maxEscalations } : null
           if (task.budgetShortfall) deps.notify?.(`Prewalk review budget is short: ${visits} mandatory visits, limit ${limits.maxEscalations}`)
-          await persist("plan-proposed", { eventId: input.eventId, reason: "human-plan-approval-required" })
+          await persist(revising ? "plan-revised" : "plan-proposed", { eventId: input.eventId, reason: "human-plan-approval-required" })
           return { ok: true, proposalId: proposal.proposal.id, budgetShortfall: task.budgetShortfall }
         }
         if (input.action === "progress") {

@@ -111,12 +111,13 @@ function statusLine(ctx: ExtensionContext, state: any, armed: { frontierModel: s
     : waiting ? `Awaiting approval (${waiting})`
       : state?.stage === "paused" ? "Paused" : state?.stage === "stopped" ? "Stopped"
       : !state ? "Armed" : undefined
-  const focus = special ?? (current === "Build" && number > 0 ? `Build (${number}/${state.phases.length})` : current ?? "Idle")
-  const highlighted = ctx.ui.theme?.fg("accent", ctx.ui.theme.bold(focus)) ?? focus
+  const status = special ? ctx.ui.theme?.fg("accent", ctx.ui.theme.bold(special)) ?? special : undefined
   const role = waiting || ["paused", "stopped", "complete"].includes(state?.stage) ? undefined : state?.role
-  const frontier = `${role === "frontier" ? ">" : ""}F:${names.frontierModel}`
-  const cheap = `${role === "cheap" ? ">" : ""}C:${names.cheapModel}`
-  return `Prewalk: ${highlighted} | ${steps.join(" → ")} | ${frontier} ${cheap}`
+  const modelName = (ref: string) => ref.split("/").slice(1).join("/") || ref
+  const frontier = `${role === "frontier" ? ">" : ""}F:${modelName(names.frontierModel)}`
+  const cheap = `${role === "cheap" ? ">" : ""}C:${modelName(names.cheapModel)}`
+  const thinking = ctx.thinkingLevel ? `T:${ctx.thinkingLevel}` : undefined
+  return `Prewalk: ${[status, steps.join(" → "), `${frontier} ${cheap}`, thinking].filter(Boolean).join(" | ")}`
 }
 
 function writePlanView(ctx: ExtensionContext, state: any) {
@@ -233,7 +234,7 @@ export default function (pi: ExtensionAPI) {
   }, { additionalProperties: false })
   pi.registerTool({
     name: "prewalk_checkpoint", label: "Prewalk checkpoint",
-    description: "Submit an initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report TODO progress and optional verified artifact paths via evidence; propose a refinement; or submit a Frontier verdict. Human approval is only through /prewalk approve.",
+    description: "Submit an initial plan or revise the pending initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report TODO progress and optional verified artifact paths via evidence; propose a refinement; or submit a Frontier verdict. A revised initial plan supersedes the prior pending proposal. Human approval is only through /prewalk approve.",
     parameters: checkpointSchema, executionMode: "sequential",
     async execute(_id, params, _signal, _update, ctx) {
       const result = await runtime.checkpoint({ ...params, eventId: params.eventId ?? randomUUID() })
@@ -287,8 +288,10 @@ export default function (pi: ExtensionAPI) {
     if (state && !["stopped", "complete", "paused"].includes(state.stage)) {
       const stageGuidance = state.stage === "frontier_plan"
         ? `Discover repository-specific checks from instructions, CI, build files, and tests. Write the human plan and all human-readable plan fields in ${planLanguage(state) === "ja" ? "Japanese" : "English"}, following the user's explicit language preference; keep paths, IDs, and commands unchanged. Then submit a structured plan with prewalk_checkpoint action submit_plan. Shape: {hardContract:{outcome:string,constraints:string[],allowedPaths:string[],protectedPaths:string[]},softPlan:{expectedFiles:string[]},phases:[{id:string,todos:[{id:string,text:string,status:'pending'}],checks:[{id:string,command:string,args:string[],cwd:string,required:true}]}]}. A phase without executable checks needs evidenceRequired:string[] of repository-relative artifact files (record their existence via prewalk_checkpoint progress evidence). Do not edit source before the user approves the proposal.`
-        : state.stage === "frontier_initial"
-          ? "The plan is approved. Make one successful representative source edit inside its hard contract, then stop; Prewalk will hand off to Cheap."
+        : state.stage === "awaiting_approval"
+          ? "The initial plan is awaiting human approval. If the user asks to revise it, submit a revised initial plan with prewalk_checkpoint action submit_plan; this supersedes the previous proposal and requires approval of the new exact proposal. Do not edit source."
+          : state.stage === "frontier_initial"
+            ? "The plan is approved. Make one successful representative source edit inside its hard contract, then stop; Prewalk will hand off to Cheap."
           : state.stage === "frontier_review"
             ? "Review the current diff, plan, pending work, and actual fresh validation evidence. Submit pass, repair, or needs-human via prewalk_checkpoint; do not approve proposals yourself."
             : state.role === "cheap"
@@ -350,6 +353,7 @@ export default function (pi: ExtensionAPI) {
       updateStatus(ctx)
     }).catch(() => notify(ctx, "Prewalk model selection could not be recorded", "error"))
   })
+  pi.on("thinking_level_select", (_event, ctx) => updateStatus(ctx))
   pi.on("context", async (event, ctx) => {
     const state = snapshotState()
     if (!state || ["paused", "stopped", "complete"].includes(state.stage)) return

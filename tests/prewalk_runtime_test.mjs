@@ -84,6 +84,28 @@ test("explicit plan approval preserves one representative edit and switches in t
   } finally { fx.cleanup() }
 })
 
+test("a pending initial plan can be revised without restarting Prewalk", async () => {
+  const fx = fixture()
+  try {
+    await fx.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: fx.root, goal: "goal", frontierModel: "frontier/model", cheapModel: "cheap/model" })
+    const initial = await fx.runtime.checkpoint({ eventId: "initial-plan", action: "submit_plan", plan: plan(fx.root) })
+    const revisedPlan = { ...plan(fx.root), hardContract: { ...plan(fx.root).hardContract, outcome: "revised goal" } }
+    const revised = await fx.runtime.checkpoint({ eventId: "revised-plan", action: "submit_plan", plan: revisedPlan })
+
+    assert.equal(revised.ok, true)
+    assert.notEqual(revised.proposalId, initial.proposalId)
+    assert.equal(fx.runtime.state().stage, "awaiting_approval")
+    assert.equal(fx.runtime.state().proposals.find((proposal) => proposal.id === initial.proposalId).status, "superseded")
+    assert.equal(fx.runtime.state().proposals.find((proposal) => proposal.id === revised.proposalId).status, "pending")
+    assert.equal((await fx.runtime.approve(initial.proposalId)).ok, false)
+
+    assert.equal((await fx.runtime.approve(revised.proposalId)).ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_initial")
+    assert.equal(fx.runtime.state().initialApproval.proposalId, revised.proposalId)
+    assert.equal(fx.runtime.state().plan.hardContract.outcome, "revised goal")
+  } finally { fx.cleanup() }
+})
+
 test("ordinary Cheap shell and unknown tools remain usable; exact bash check outcomes are observed", async () => {
   const fx = fixture()
   try {
