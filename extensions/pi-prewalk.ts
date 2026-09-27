@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { dirname, join, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
@@ -42,12 +43,31 @@ function resolveModel(ctx: ExtensionContext, value: string) {
   return ctx.modelRegistry.find(provider, parts.join("/"))
 }
 function display(value: unknown) { return JSON.stringify(value, null, 2) }
-function languageForGoal(goal: string) {
-  if (/\b(?:in|write|respond in) English\b/i.test(goal) || /英語で/.test(goal)) return "en"
-  if (/\b(?:in|write|respond in) Japanese\b/i.test(goal) || /日本語で/.test(goal)) return "ja"
-  return /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(goal) ? "ja" : "en"
+function explicitLanguage(text: string) {
+  if (/\b(?:in|write|respond in) English\b/i.test(text) || /英語で/.test(text)) return "en"
+  if (/\b(?:in|write|respond in) Japanese\b/i.test(text) || /日本語で/.test(text)) return "ja"
+  return undefined
 }
-function planLanguage(state: any) { return state.displayLanguage ?? languageForGoal(state.goal ?? "") }
+function textLanguage(text: string) {
+  if (/^(?:ok|ng|\/\S+)$/i.test(text.trim())) return undefined
+  if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return "ja"
+  return (text.match(/[a-z]+/gi)?.length ?? 0) >= 3 ? "en" : undefined
+}
+function sessionLanguage(ctx: ExtensionContext, prompt: string) {
+  const history = ctx.sessionManager.getBranch().flatMap((entry: any) => {
+    if (entry.type !== "message" || !["user", "assistant"].includes(entry.message?.role)) return []
+    const content = entry.message.content
+    const text = typeof content === "string" ? content : (content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n")
+    return text === prompt ? [] : [{ role: entry.message.role, text }]
+  }).reverse()
+  const userTexts = history.filter((item) => item.role === "user").map((item) => item.text)
+  return explicitLanguage(prompt) ?? userTexts.map(explicitLanguage).find(Boolean) ?? userTexts.map(textLanguage).find(Boolean) ?? history.map((item) => textLanguage(item.text)).find(Boolean) ?? textLanguage(prompt) ?? "en"
+}
+function planLanguage(state: any) { return state.displayLanguage ?? explicitLanguage(state.goal ?? "") ?? textLanguage(state.goal ?? "") ?? "en" }
+function isTerminal(state: any) { return !state || ["stopped", "complete"].includes(state.stage) }
+function revisionQuestion(state: any) {
+  return label(state, "The proposal was not approved. What would you like to change?", "この案は承認せず、相談を続けます。変更したい点を教えてください。")
+}
 function label(state: any, english: string, japanese: string) { return planLanguage(state) === "ja" ? japanese : english }
 function pendingProposal(state: any) {
   if (!state || !["awaiting_approval", "awaiting_human_approval", "awaiting_final_approval"].includes(state.stage)) return undefined
@@ -86,7 +106,7 @@ function approvalText(state: any, proposal: any) {
       : proposal.kind === "initial" ? planSummary(state, proposal.patch).join("\n") : display(proposal.patch)
   const response = proposal.kind === "decision"
     ? label(state, "Answer the question; a generic approval is not a decision.", "質問に回答してください。単なる承認では判断できません。")
-    : label(state, "Reply OK to approve this exact proposal, or use /prewalk status to inspect it.", "内容を確認して OK などで承認できます。/prewalk status でも確認できます。")
+    : label(state, "Reply OK to approve, NG to discuss changes, or describe what to revise.", "OK で承認、NG で相談・修正に戻ります。変更したい内容をそのまま伝えても構いません。")
   return `Prewalk — ${kind}\n${detail}\n${response}`
 }
 
@@ -107,7 +127,8 @@ function statusLine(ctx: ExtensionContext, state: any, armed: { frontierModel: s
   const waiting = state?.stage === "awaiting_approval" ? "plan"
     : state?.stage === "awaiting_final_approval" ? "final"
       : state?.stage === "awaiting_human_approval" ? "scope" : undefined
-  const special = pendingProposal(state)?.kind === "decision" ? "Awaiting decision"
+  const special = state?.stage === "awaiting_revision" ? "Awaiting feedback"
+    : pendingProposal(state)?.kind === "decision" ? "Awaiting decision"
     : waiting ? `Awaiting approval (${waiting})`
       : state?.stage === "paused" ? "Paused" : state?.stage === "stopped" ? "Stopped"
       : !state ? "Armed" : undefined
@@ -146,17 +167,29 @@ function writePlanView(ctx: ExtensionContext, state: any) {
 
 export default function (pi: ExtensionAPI) {
   let latestCtx: ExtensionContext | undefined
-  let switchingTo: string | undefined
+  const modelSelectionOrigin = new AsyncLocalStorage<boolean>()
+  let modelSwitchQueue: Promise<boolean> = Promise.resolve(true)
+  let activeModelSwitch: { userModel: ExtensionContext["model"] } | undefined
+  let stoppingModel: { generation: number; model: ExtensionContext["model"] } | undefined
+  let runtimeGeneration = 0
   let armed: { frontierModel: string; cheapModel: string; routing: Record<string, unknown>; sessionId?: string } | undefined
   let handledCurrentTurn = false
+  let routingGeneration = 0
   let shownProposal: { runId: string; sessionId: string; workspace: string; id: string; baseRevision: string; hardRevision: number } | undefined
-  const createRuntime = () => createPrewalkRuntime({ deps: {
+  const createRuntime = () => {
+    const instance = ++runtimeGeneration
+    return createPrewalkRuntime({ deps: {
     cwd: process.cwd(),
-    appendEntry: (type: string, data: unknown) => pi.appendEntry(type, data),
+    appendEntry: (type: string, data: unknown) => {
+      if (instance !== runtimeGeneration) throw new Error("Prewalk runtime was replaced")
+      return pi.appendEntry(type, data)
+    },
     getBranch: () => latestCtx?.sessionManager.getBranch() ?? [],
     findModel: (ref: string) => latestCtx ? resolveModel(latestCtx, ref) : undefined,
-    setModel: async (_model: unknown, ref: string) => latestCtx ? switchModel(ref, latestCtx) : false,
+    setModel: async (_model: unknown, ref: string) => instance === runtimeGeneration && latestCtx ? switchModel(ref, latestCtx) : false,
     sendMessage: (message: any) => {
+      const current = snapshotState()
+      if (instance !== runtimeGeneration || isTerminal(current) || current.runId !== message.state.runId) return
       const content = routingPrompt(message)
       if (content === undefined || snapshotState()?.stage === "stopped") {
         latestCtx?.abort()
@@ -165,18 +198,20 @@ export default function (pi: ExtensionAPI) {
       }
       pi.sendMessage({ customType: "prewalk-routing", content, display: true, details: { runId: message.state.runId, stage: message.state.stage, reason: message.reason } }, { deliverAs: "steer", triggerTurn: true })
     },
-    notify: (message: string) => latestCtx?.ui.notify(message, "info"),
+    notify: (message: string) => { if (instance === runtimeGeneration) latestCtx?.ui.notify(message, "info") },
   } })
+  }
   let runtime = createRuntime()
 
   const notify = (ctx: ExtensionContext | undefined, text: string, kind: "info" | "warning" | "error" = "info") => ctx?.ui.notify(text, kind)
   const snapshotState = () => runtime.state()
   const updateStatus = (ctx: ExtensionContext | undefined) => {
-    if (ctx) ctx.ui.setStatus("prewalk", statusLine(ctx, snapshotState(), armed))
+    if (ctx) ctx.ui.setStatus("prewalk", snapshotState()?.stage === "stopped" ? undefined : statusLine(ctx, snapshotState(), armed))
   }
   const persistView = (ctx: ExtensionContext | undefined) => {
     const state = snapshotState()
-    if (ctx && state) writePlanView(ctx, state)
+    if (isTerminal(state)) return
+    if (ctx) writePlanView(ctx, state)
     updateStatus(ctx)
   }
   const presentPending = (ctx: ExtensionContext | undefined) => {
@@ -189,11 +224,20 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(approvalText(state, proposal), "info")
   }
 
-  async function switchModel(ref: string, ctx: ExtensionContext) {
-    const target = resolveModel(ctx, ref)
-    if (!target) return false
-    switchingTo = ref
-    try { return await pi.setModel(target) } finally { switchingTo = undefined }
+  function switchModel(ref: string, ctx: ExtensionContext) {
+    const generation = routingGeneration
+    const next = modelSwitchQueue.catch(() => false).then(async () => {
+      if (generation !== routingGeneration) return false
+      const target = resolveModel(ctx, ref)
+      if (!target) return false
+      // Pi reports both manual and extension selections as source "set".
+      // Attribute our own async call chain instead of guessing from the model ID.
+      activeModelSwitch = { userModel: ctx.model }
+      try { return await modelSelectionOrigin.run(true, () => pi.setModel(target)) }
+      finally { activeModelSwitch = undefined }
+    })
+    modelSwitchQueue = next
+    return next
   }
 
   function reviewEvidence(ctx: ExtensionContext) {
@@ -201,12 +245,19 @@ export default function (pi: ExtensionAPI) {
     return result.status === 0 ? result.stdout : `Diff unavailable; inspect the worktree directly (${result.error?.message ?? result.status}).`
   }
 
+  function conversationGuidance(state: any) {
+    const language = `Write human-facing plans, revisions, and questions in ${planLanguage(state) === "ja" ? "Japanese" : "English"}; keep paths, IDs, and commands unchanged.`
+    const revision = state.revisionRequest
+      ? ` The user did not approve the previous ${state.revisionRequest.kind} proposal. Revision feedback: ${JSON.stringify(state.revisionRequest.feedback)}. Address this feedback; do not implement or finalize the rejected proposal. A changed boundary or completion needs a newly displayed proposal and direct human approval. If no feedback was given, ask what to change and wait.` : ""
+    return `${language}${revision} Only direct human input can approve a displayed proposal; model output cannot approve it.`
+  }
+
   function routingPrompt(message: any) {
     const state = message.state
     if (state.role === "frontier") {
       const evidence = runtime.reviewContext({ diff: latestCtx ? reviewEvidence(latestCtx) : "Diff unavailable" })
       if (!evidence.ok) return undefined
-      return `PREWALK FRONTIER REVIEW\nReview phase(s): ${(state.reviewPhaseIds ?? []).join(", ") || "final/task"}. Review the actual diff and validation evidence before calling prewalk_checkpoint with a pass, repair, or needs-human verdict. Human approval cannot be issued by a model.\n${evidence.text}`
+      return `PREWALK FRONTIER REVIEW\nReview phase(s): ${(state.reviewPhaseIds ?? []).join(", ") || "final/task"}. Review the actual diff and validation evidence before calling prewalk_checkpoint with a pass, repair, or needs-human verdict. Human approval cannot be issued by a model. ${conversationGuidance(state)}\n${evidence.text}`
     }
     return `PREWALK CHEAP CONTINUATION\nContinue phase ${state.currentPhaseId ?? "current"} inside the approved hard contract. Repair pending work if applicable; do not broaden scope without a proposal.`
   }
@@ -234,12 +285,12 @@ export default function (pi: ExtensionAPI) {
   }, { additionalProperties: false })
   pi.registerTool({
     name: "prewalk_checkpoint", label: "Prewalk checkpoint",
-    description: "Submit an initial plan or revise the pending initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report TODO progress and optional verified artifact paths via evidence; propose a refinement; or submit a Frontier verdict. A revised initial plan supersedes the prior pending proposal. Human approval is only through /prewalk approve.",
+    description: "Submit an initial plan or revise the pending initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report TODO progress and optional verified artifact paths via evidence; propose a refinement; or submit a Frontier verdict. A revised initial plan supersedes the prior pending proposal. Only direct human input can approve the displayed proposal. Replying NG requests revision without ending Prewalk.",
     parameters: checkpointSchema, executionMode: "sequential",
     async execute(_id, params, _signal, _update, ctx) {
-      const result = await runtime.checkpoint({ ...params, eventId: params.eventId ?? randomUUID() })
-      persistView(ctx)
-      presentPending(ctx)
+      const owner = runtime
+      const result = await owner.checkpoint({ ...params, eventId: params.eventId ?? randomUUID() })
+      if (owner === runtime) { persistView(ctx); presentPending(ctx) }
       return { content: [{ type: "text", text: display(result) }], details: result }
     },
   })
@@ -253,37 +304,71 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
-  pi.on("session_start", async (_event, ctx) => {
+  async function ensureModel(ctx: ExtensionContext, state: any, expected: string | undefined) {
+    const owner = runtime
+    await modelSwitchQueue.catch(() => false)
+    if (owner !== runtime || isTerminal(snapshotState())) return false
+    let ready = true
+    if (expected && modelRef(ctx.model) !== expected) {
+      try { ready = await switchModel(expected, ctx) } catch { ready = false }
+    }
+    if (owner !== runtime || isTerminal(snapshotState()) || snapshotState()?.runId !== state.runId) return false
+    if (!ready) notify(ctx, label(state,
+      "Prewalk could not select the required model. Work remains on hold; the next reply will retry, or use /prewalk off to return to ordinary work.",
+      "必要なモデルを選べないため、作業を保留しています。次の返信で再試行します。/prewalk off で通常の会話に戻れます。"), "warning")
+    return ready
+  }
+
+  async function recoverPaused(ctx: ExtensionContext) {
+    const currentRuntime = runtime
+    const state = snapshotState()
+    if (state?.stage !== "paused") return false
+    const nextStage = state.resumeStage === "awaiting_human_approval" ? state.proposalResumeStage : state.resumeStage
+    const expected = ["awaiting_approval", "awaiting_revision", "awaiting_final_approval", "frontier_plan", "frontier_initial", "frontier_review", "frontier_review_pending"].includes(nextStage)
+      ? state.frontierModel : ["cheap", "cheap_pending"].includes(nextStage) ? state.cheapModel : undefined
+    if (!await ensureModel(ctx, state, expected) || runtime !== currentRuntime) return false
+    const resumed = await currentRuntime.resume()
+    if (!resumed.ok || currentRuntime !== runtime || isTerminal(snapshotState())) return false
+    presentPending(ctx)
+    if (snapshotState()?.stage === "awaiting_revision") notify(ctx, revisionQuestion(snapshotState()))
+    updateStatus(ctx)
+    return true
+  }
+
+  async function restoreSession(ctx: ExtensionContext) {
+    routingGeneration += 1
     latestCtx = ctx
     armed = undefined
     shownProposal = undefined
     runtime = createRuntime()
     const restored = await runtime.restore({ sessionId: ctx.sessionManager.getSessionId(), workspace: ctx.cwd })
+    if (restored.ok && !restored.terminal) {
+      await recoverPaused(ctx)
+    } else if (restored.reason && restored.reason !== "no-matching-state") {
+      notify(ctx, `Prewalk could not restore: ${restored.reason}`, "warning")
+    }
     updateStatus(ctx)
-    if (restored.ok && !restored.terminal) notify(ctx, "Prewalk state restored paused; use /prewalk resume to continue.", "warning")
-  })
-  pi.on("session_tree", async (_event, ctx) => {
-    latestCtx = ctx
-    armed = undefined
-    shownProposal = undefined
-    runtime = createRuntime()
-    const restored = await runtime.restore({ sessionId: ctx.sessionManager.getSessionId(), workspace: ctx.cwd })
-    updateStatus(ctx)
-    if (restored.ok && !restored.terminal) notify(ctx, "Prewalk branch state restored paused; use /prewalk resume to continue.", "warning")
-  })
+  }
+  pi.on("session_start", async (_event, ctx) => restoreSession(ctx))
+  pi.on("session_tree", async (_event, ctx) => restoreSession(ctx))
 
   pi.on("before_agent_start", async (event, ctx) => {
     latestCtx = ctx
     if (armed && !runtime.state() && event.prompt.trim()) {
       const sessionId = ctx.sessionManager.getSessionId()
       if (armed.sessionId && armed.sessionId !== sessionId) { armed = undefined; return }
-      const started = await runtime.start({ runId: randomUUID(), sessionId, workspace: ctx.cwd, goal: event.prompt, displayLanguage: languageForGoal(event.prompt), frontierModel: armed.frontierModel, cheapModel: armed.cheapModel })
+      const startingRuntime = runtime
+      const route = armed
+      const started = await startingRuntime.start({ runId: randomUUID(), sessionId, workspace: ctx.cwd, goal: event.prompt, displayLanguage: sessionLanguage(ctx, event.prompt), frontierModel: route.frontierModel, cheapModel: route.cheapModel })
+      if (armed !== route || runtime !== startingRuntime || (started.ok && isTerminal(snapshotState()))) return
       if (!started.ok) { notify(ctx, `Prewalk could not start: ${started.reason}`, "error"); return }
       const planPath = join(ctx.cwd, PREWALK_PLAN_PATH)
       if (existsSync(planPath)) renameSync(planPath, `${planPath}.prewalk-backup-${started.state.runId}`)
       armed.sessionId = sessionId
       updateStatus(ctx)
     }
+    const language = explicitLanguage(event.prompt)
+    if (language) await runtime.setDisplayLanguage(language)
     const state = snapshotState()
     if (state && !["stopped", "complete", "paused"].includes(state.stage)) {
       const stageGuidance = state.stage === "frontier_plan"
@@ -297,7 +382,7 @@ export default function (pi: ExtensionAPI) {
             : state.role === "cheap"
               ? "Implement only inside the approved hard contract. Update current-phase TODOs with prewalk_checkpoint progress and report readiness only when required checks/evidence are fresh."
               : "Preserve the approved task boundary and use prewalk_checkpoint for permitted state transitions."
-      event.systemPromptOptions.appendSystemPrompt = (event.systemPromptOptions.appendSystemPrompt ?? "") + `\n\nPREWALK STATE\nRole: ${state.role}; stage: ${state.stage}. ${stageGuidance} Human approval is only through direct user input or /prewalk approve <id>; model output cannot approve proposals.`
+      event.systemPromptOptions.appendSystemPrompt = (event.systemPromptOptions.appendSystemPrompt ?? "") + `\n\nPREWALK STATE\nRole: ${state.role}; stage: ${state.stage}. ${stageGuidance} ${conversationGuidance(state)}`
     }
   })
 
@@ -306,6 +391,7 @@ export default function (pi: ExtensionAPI) {
     if (result?.block) return { block: true, reason: result.reason }
   })
   pi.on("tool_result", (event) => {
+    if (isTerminal(snapshotState())) return
     // Pi's built-in bash returns isError=false only after an exit status of zero.
     // Nonzero/abort/timeout results are indistinguishable in BashToolDetails;
     // use prewalk_validate for structured failed-check evidence.
@@ -316,7 +402,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", async (_event, ctx) => {
     handledCurrentTurn = false
     const state = snapshotState()
-    if (state) {
+    if (!isTerminal(state)) {
       const result = await runtime.turnStart({ eventId: `turn:${state.runId}:${randomUUID()}`, model: modelRef(ctx.model) })
       if (result.action === "stopped") { notify(ctx, `Prewalk stopped: ${result.reason}`, "error"); ctx.abort?.() }
       updateStatus(ctx)
@@ -325,12 +411,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", async (event, ctx) => {
     latestCtx = ctx
     handledCurrentTurn = true
-    const state = snapshotState()
-    if (!state) return
+    const owner = runtime
+    const state = owner.state()
+    if (isTerminal(state)) return
     const id = `${state.runId}:${event.messageEntryId}`
     const ids = event.toolResultEntryIds ?? []
-    if (ids.length) await runtime.completeToolBatch({ eventId: `batch:${id}`, toolIds: ids })
-    const result = await runtime.turnEnd({ eventId: `turn-end:${id}`, message: event.message })
+    if (ids.length) await owner.completeToolBatch({ eventId: `batch:${id}`, toolIds: ids })
+    if (owner !== runtime || isTerminal(owner.state())) return
+    const result = await owner.turnEnd({ eventId: `turn-end:${id}`, message: event.message })
+    if (owner !== runtime) return
     reportSwitch(ctx, result)
     persistView(ctx)
     presentPending(ctx)
@@ -339,15 +428,20 @@ export default function (pi: ExtensionAPI) {
     latestCtx = ctx
     if (handledCurrentTurn || event.outcome !== "completed") return
     const state = snapshotState()
-    if (!state) return
-    const result = await runtime.beforeSettle({ eventId: `settle:${state.runId}:${state.stateRevision}`, message: undefined })
+    if (isTerminal(state)) return
+    const owner = runtime
+    const result = await owner.beforeSettle({ eventId: `settle:${state.runId}:${state.stateRevision}`, message: undefined })
+    if (owner !== runtime) return
     reportSwitch(ctx, result)
     persistView(ctx)
     presentPending(ctx)
   })
   pi.on("model_select", (event, ctx) => {
     const selected = modelRef(event.model)
-    if (!snapshotState() || (switchingTo && selected === switchingTo)) return
+    if (modelSelectionOrigin.getStore()) return
+    if (activeModelSwitch) activeModelSwitch.userModel = event.model
+    if (stoppingModel?.generation === routingGeneration) stoppingModel.model = event.model
+    if (isTerminal(snapshotState())) return
     void runtime.modelSelected(selected ?? "unknown").then((result) => {
       if (!result.ok) notify(ctx, `Prewalk paused after external model selection (${selected ?? "unknown"})`, "warning")
       updateStatus(ctx)
@@ -376,21 +470,48 @@ export default function (pi: ExtensionAPI) {
       }
       return { messages: [...bounded.messages, reviewMessage] }
     }
-    return { messages: [...event.messages, { role: "custom", customType: "prewalk-current-stage", display: false, timestamp: Date.now(), content: `Prewalk role: ${state.role}; stage: ${state.stage}; phase: ${state.currentPhaseId ?? "none"}. ${state.role === "cheap" ? "Stay inside the approved hard boundary; report phase TODOs and observed checks, then wait for Frontier review." : "Inspect plan, changed paths and evidence; record your review verdict or an exact proposal."} Only direct user input or /prewalk approve can approve the hard contract or task completion.` }] }
+    return { messages: [...event.messages, { role: "custom", customType: "prewalk-current-stage", display: false, timestamp: Date.now(), content: `Prewalk role: ${state.role}; stage: ${state.stage}; phase: ${state.currentPhaseId ?? "none"}. ${state.role === "cheap" ? "Stay inside the approved hard boundary; report phase TODOs and observed checks, then wait for Frontier review." : "Inspect plan, changed paths and evidence; record your review verdict or an exact proposal."} ${conversationGuidance(state)}` }] }
   })
 
   pi.on("input", async (event, ctx) => {
     if (event.source !== "interactive" || ctx.mode !== "tui" || !ctx.hasUI || event.images?.length) return { action: "continue" }
-    const state = snapshotState()
+    latestCtx = ctx
+    let state = snapshotState()
+    if (isTerminal(state)) return { action: "continue" }
+    if (state.sessionId !== ctx.sessionManager.getSessionId() || state.workspace !== resolve(ctx.cwd)) return { action: "continue" }
+    const answer = event.text.trim().toLocaleLowerCase("en")
+    const rejection = /^(?:ng|却下)(?:$|[\s、,:：]\s*(.*))$/is.exec(event.text.trim())
+    const shortAnswer = ["ok", "承認", "いいよ", "進めて", "この計画で進めて", "この変更で進めて", "完了を承認", "ng", "却下"].includes(answer)
+    if (state.stage === "paused") {
+      if (!await recoverPaused(ctx)) return { action: "handled" }
+      state = snapshotState()
+      // A reply to an old view cannot approve a proposal newly displayed during recovery.
+      if (shortAnswer) return { action: "handled" }
+    }
+    const feedback = rejection ? rejection[1]?.trim() ?? "" : event.text.trim()
+    if (state.stage === "awaiting_revision") {
+      const savedFeedback = state.revisionRequest?.feedback
+      const retryFeedback = shortAnswer ? (rejection ? "" : savedFeedback) : feedback
+      if (!retryFeedback) { notify(ctx, revisionQuestion(state)); return { action: "handled" } }
+      const saved = await runtime.provideRevisionFeedback(retryFeedback, { resume: false })
+      if (!saved.ok || !await ensureModel(ctx, state, state.frontierModel)) return { action: "handled" }
+      const result = await runtime.provideRevisionFeedback(retryFeedback)
+      if (!result.ok) return { action: "handled" }
+      persistView(ctx)
+      return shortAnswer ? { action: "transform", text: retryFeedback } : { action: "continue" }
+    }
     const proposal = pendingProposal(state)
     if (!proposal) return { action: "continue" }
-    const answer = event.text.trim().toLocaleLowerCase("en")
     const common = ["承認", "ok", "いいよ"]
     const extra = proposal.kind === "initial" ? ["進めて", "この計画で進めて"]
       : proposal.kind === "hard" ? ["この変更で進めて"]
         : proposal.kind === "final" ? ["完了を承認"] : []
-    if (![...common, ...extra].includes(answer)) return { action: "continue" }
-    if (proposal.kind === "decision") {
+    const affirmative = [...common, ...extra].includes(answer)
+    // Initial revisions already have a checkpoint path. Scope/final feedback must reopen review.
+    const revisionFeedback = !affirmative && !shortAnswer && event.text.trim() && ["hard", "final"].includes(proposal.kind)
+    const decisionAnswer = proposal.kind === "decision" && !shortAnswer && !rejection && event.text.trim()
+    if (!affirmative && !rejection && !revisionFeedback && !decisionAnswer) return { action: "continue" }
+    if (proposal.kind === "decision" && !decisionAnswer) {
       notify(ctx, approvalText(state, proposal), "warning")
       return { action: "handled" }
     }
@@ -404,29 +525,70 @@ export default function (pi: ExtensionAPI) {
       return { action: "handled" }
     }
     shownProposal = undefined
+    if (decisionAnswer) {
+      if (!await ensureModel(ctx, state, state.frontierModel)) { presentPending(ctx); return { action: "handled" } }
+      const result = await runtime.answerQuestion(proposal.id, event.text, { baseRevision: proposal.baseRevision })
+      if (!result.ok) { notify(ctx, result.reason, "error"); presentPending(ctx); return { action: "handled" } }
+      persistView(ctx)
+      return { action: "continue" }
+    }
+    if (rejection || revisionFeedback) {
+      const result = await runtime.rejectProposal(proposal.id, { baseRevision: proposal.baseRevision, feedback })
+      if (!result.ok) { notify(ctx, result.reason, "error"); return { action: "handled" } }
+      persistView(ctx)
+      if (!feedback) { notify(ctx, revisionQuestion(state)); return { action: "handled" } }
+      if (!await ensureModel(ctx, snapshotState(), state.frontierModel)) return { action: "handled" }
+      const resumed = await runtime.provideRevisionFeedback(feedback)
+      persistView(ctx)
+      return { action: resumed.ok ? "continue" : "handled" }
+    }
     const result = await runtime.approve(proposal.id, { baseRevision: proposal.baseRevision })
     persistView(ctx)
+    updateStatus(ctx)
     if (!result.ok) {
       notify(ctx, `${label(state, "Approval refused", "承認できません")}: ${result.reason}`, "error")
       return { action: "handled" }
     }
     const approved = snapshotState()
     if (approved && ["frontier_initial", "cheap_pending", "cheap", "frontier_review"].includes(approved.stage)) {
-      pi.sendUserMessage("Continue the approved Prewalk task in this session.", { deliverAs: "followUp" })
+      pi.sendUserMessage(label(state, "Continue the approved Prewalk task in this session.", "このセッションで承認済みの Prewalk 作業を続けてください。"), { deliverAs: "followUp" })
     }
     notify(ctx, label(state, "Proposal approved", "提案を承認しました"))
     return { action: "handled" }
   })
 
   pi.registerCommand("prewalk", {
-    description: "Arm, inspect, approve, resume, or disable bidirectional Prewalk routing.",
+    description: "Start Prewalk, inspect status, or turn it off. Discuss proposals using OK / NG or revision feedback.",
     handler: async (args, ctx) => {
       latestCtx = ctx
-      const [command, ...rest] = args.trim().split(/\s+/).filter(Boolean)
+      const parts = args.trim().split(/\s+/).filter(Boolean)
+      const [command] = parts
       if (command === "off") {
+        const generation = ++routingGeneration
+        const pendingSwitch = modelSwitchQueue
+        stoppingModel = { generation, model: activeModelSwitch?.userModel ?? ctx.model }
         armed = undefined
         shownProposal = undefined
         await runtime.cancel()
+        // Pi cannot cancel setModel during authentication. Settle it before confirming off,
+        // then restore the user's selection rather than leaving a late routing target active.
+        await pendingSwitch.catch(() => false)
+        if (generation !== routingGeneration) return
+        while (generation === routingGeneration) {
+          const previous = stoppingModel?.model
+          if (!previous || modelRef(ctx.model) === modelRef(previous)) break
+          let restored = false
+          try { restored = await switchModel(modelRef(previous)!, ctx) } catch { /* Report recovery failure below. */ }
+          if (generation !== routingGeneration) return
+          if (!restored) {
+            notify(ctx, "Prewalk is off, but the previous model could not be restored. Select the desired model in Pi.", "warning")
+            break
+          }
+          // Retry only for a new human choice made during the preceding restoration.
+          if (modelRef(stoppingModel?.model) === modelRef(previous)) break
+        }
+        if (generation !== routingGeneration) return
+        stoppingModel = undefined
         ctx.ui.setStatus("prewalk", undefined)
         ctx.ui.notify("Prewalk routing disabled", "info")
         return
@@ -439,50 +601,12 @@ export default function (pi: ExtensionAPI) {
         if (proposal) presentPending(ctx)
         return
       }
-      if (command === "approve") {
-        const proposalId = rest[0]
-        if (!proposalId) { ctx.ui.notify("Usage: /prewalk approve <proposal-id>", "error"); return }
-        const state = snapshotState()
-        const proposal = state?.proposals?.find((item: any) => item.id === proposalId && item.status === "pending")
-        if (!proposal) { ctx.ui.notify("No matching pending proposal. Run /prewalk status and approve only the displayed ID.", "error"); return }
-        ctx.ui.notify(`Approval target:\n${display(proposal)}`, "info")
-        if (!await ctx.ui.confirm("Approve Prewalk proposal?", display(proposal))) return
-        const result = await runtime.approve(proposalId, { baseRevision: proposal.baseRevision })
-        shownProposal = undefined
-        persistView(ctx)
-        if (!result.ok) { ctx.ui.notify(`Approval refused: ${result.reason}`, "error"); return }
-        const approvedState = snapshotState()
-        if (approvedState && ["frontier_initial", "cheap_pending", "cheap", "frontier_review"].includes(approvedState.stage)) {
-          // Approval made while idle may restart the user turn, but does not authorize any other proposal.
-          pi.sendUserMessage("Continue the approved Prewalk task in this session.", { deliverAs: "followUp" })
-        }
-        ctx.ui.notify(`Approved ${proposalId}`, "info")
-        return
-      }
-      if (command === "reject") {
-        const proposalId = rest[0]
-        const state = snapshotState()
-        const proposal = state?.proposals?.find((item: any) => item.id === proposalId && item.status === "pending")
-        if (!proposal) { ctx.ui.notify("No matching pending proposal to reject.", "error"); return }
-        ctx.ui.notify(`Rejection target:\n${display(proposal)}`, "warning")
-        if (!await ctx.ui.confirm("Reject this Prewalk proposal?", display(proposal))) return
-        const result = await runtime.rejectProposal(proposalId)
-        shownProposal = undefined
-        updateStatus(ctx)
-        if (result.action !== "stopped") ctx.ui.notify(`Could not reject proposal: ${result.reason}`, "error")
-        else ctx.ui.notify(`Rejected ${proposalId}; task is stopped and will not continue automatically.`, "warning")
-        return
-      }
-      if (command === "resume") {
-        const result = await runtime.resume()
-        if (!result.ok) { ctx.ui.notify(`Cannot resume: ${result.reason}`, "error"); return }
-        persistView(ctx)
-        presentPending(ctx)
-        pi.sendUserMessage("Resume the explicitly paused Prewalk task.", { deliverAs: "followUp" })
+      if (parts.length > 2 || parts.some((part) => !/^[^/\s]+\/.+/.test(part))) {
+        ctx.ui.notify("Usage: /prewalk [<frontier-model> <cheap-model>] | status | off", "error")
         return
       }
       try {
-        if (["stopped", "complete"].includes(snapshotState()?.stage ?? "")) { runtime = createRuntime(); shownProposal = undefined }
+        const generation = ++routingGeneration
         let models: { firstModel: string; secondModel: string }
         let routing: Record<string, unknown>
         const explicitCount = args.trim() ? args.trim().split(/\s+/).length : 0
@@ -498,9 +622,13 @@ export default function (pi: ExtensionAPI) {
         const frontier = resolveModel(ctx, models.firstModel)
         const cheap = resolveModel(ctx, models.secondModel)
         if (!frontier || !cheap) throw new Error(`Model unavailable: ${!frontier ? models.firstModel : models.secondModel}`)
+        if (["stopped", "complete"].includes(snapshotState()?.stage ?? "")) { runtime = createRuntime(); shownProposal = undefined }
         await runtime.configure(routing)
+        if (generation !== routingGeneration) return
         const selected = modelRef(ctx.model)
-        if (selected !== models.firstModel && !await switchModel(models.firstModel, ctx)) throw new Error(`Could not select Frontier model ${models.firstModel}`)
+        const selectedFrontier = selected === models.firstModel || await switchModel(models.firstModel, ctx)
+        if (generation !== routingGeneration) return
+        if (!selectedFrontier) throw new Error(`Could not select Frontier model ${models.firstModel}`)
         armed = { frontierModel: models.firstModel, cheapModel: models.secondModel, routing: { ...routing } }
         updateStatus(ctx)
         ctx.ui.notify(`Prewalk armed for the next user prompt: ${models.firstModel} -> ${models.secondModel}. Submit the task prompt next.`, "info")

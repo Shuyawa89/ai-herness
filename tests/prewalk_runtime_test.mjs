@@ -68,6 +68,14 @@ async function beginCheap(fx, extra = {}) {
   return submitted.proposalId
 }
 
+async function requestHumanDecision(fx) {
+  await beginCheap(fx)
+  fx.runtime.observeToolCall({ id: "decision-scope", name: "edit", input: { path: join(fx.root, "package.json") } })
+  await fx.runtime.completeToolBatch({ eventId: "decision-scope-batch" })
+  await fx.runtime.turnEnd({ eventId: "decision-review" })
+  return fx.runtime.checkpoint({ action: "verdict", verdict: "needs-human", reason: "Which existing endpoint should this use?" })
+}
+
 test("explicit plan approval preserves one representative edit and switches in the same session", async () => {
   const fx = fixture()
   try {
@@ -90,7 +98,19 @@ test("a pending initial plan can be revised without restarting Prewalk", async (
     await fx.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: fx.root, goal: "goal", frontierModel: "frontier/model", cheapModel: "cheap/model" })
     const initial = await fx.runtime.checkpoint({ eventId: "initial-plan", action: "submit_plan", plan: plan(fx.root) })
     const revisedPlan = { ...plan(fx.root), hardContract: { ...plan(fx.root).hardContract, outcome: "revised goal" } }
+    for (const [name, input] of [
+      ["edit", { path: join(fx.root, "src/a.mjs") }],
+      ["bash", { command: "printf bypass" }],
+      ["prewalk_validate", { checkId: "test-1" }],
+      ["prewalk_checkpoint", { action: "progress", phaseId: "phase-1", todos: [] }],
+      ["prewalk_checkpoint", { action: "cancel" }],
+    ]) {
+      assert.equal(fx.runtime.observeToolCall({ id: `blocked-${name}-${input.action ?? "tool"}`, name, input })?.block, true)
+    }
+    assert.equal(fx.runtime.state().initialApproval, null)
+    assert.equal(fx.runtime.observeToolCall({ id: "revised-plan-tool", name: "prewalk_checkpoint", input: { action: "submit_plan", plan: revisedPlan } }), undefined)
     const revised = await fx.runtime.checkpoint({ eventId: "revised-plan", action: "submit_plan", plan: revisedPlan })
+    fx.runtime.observeToolResult({ id: "revised-plan-tool", name: "prewalk_checkpoint", isError: false })
 
     assert.equal(revised.ok, true)
     assert.notEqual(revised.proposalId, initial.proposalId)
@@ -314,7 +334,7 @@ test("unavailable model and model-switch errors leave a durable stop without aut
     assert.equal(outcome.action, "stopped")
     assert.equal(fx.runtime.state().stage, "stopped")
     assert.equal(fx.runtime.state().stopReason, "model-switch-failed")
-    assert.equal((await fx.runtime.turnEnd({ eventId: "again" })).action, "stopped")
+    assert.equal((await fx.runtime.turnEnd({ eventId: "again" })).action, "none")
   } finally { fx.cleanup() }
 })
 
@@ -726,4 +746,440 @@ test("extension-independent worktree snapshot baseline detects changed pre-dirty
     const diff = await fx.runtime.completeToolBatch({ eventId: "dirty-edit" })
     assert.equal(diff.changedFiles.includes("src/dirty.mjs"), true)
   } finally { fx.cleanup() }
+})
+
+test("terminal runs bypass tool blocking and ignore later usage, tool results, and routing events", async () => {
+  const stopped = fixture()
+  try {
+    await beginCheap(stopped)
+    assert.equal(stopped.runtime.observeToolCall({ id: "late-edit", name: "edit", input: { path: join(stopped.root, "src/a.mjs") } }), undefined)
+    await stopped.runtime.cancel()
+    const state = stopped.runtime.state()
+    const entryCount = stopped.entries.length
+    for (const [name, input] of [
+      ["read", { path: "README.md" }],
+      ["bash", { command: "printf normal" }],
+      ["edit", { path: join(stopped.root, "src/a.mjs") }],
+      ["write", { path: join(stopped.root, "src/a.mjs") }],
+      ["prewalk_checkpoint", { action: "progress" }],
+      ["prewalk_validate", { checkId: "test-1" }],
+    ]) assert.equal(stopped.runtime.observeToolCall({ id: `after-off-${name}`, name, input }), undefined)
+    stopped.runtime.observeToolResult({ id: "late-edit", name: "edit", isError: false })
+    assert.equal(await stopped.runtime.recordUsage({ role: "assistant", usage: { input: 10, output: 20 } }), false)
+    assert.equal((await stopped.runtime.turnEnd({ eventId: "late-turn", message: { role: "assistant", usage: { input: 10 } } })).action, "none")
+    assert.equal((await stopped.runtime.turnStart({ eventId: "late-start" })).action, "none")
+    assert.equal((await stopped.runtime.checkpoint({ eventId: "late-checkpoint", action: "cancel" })).reason, "run-not-active")
+    await stopped.runtime.completeToolBatch({ eventId: "late-batch" })
+    assert.equal(stopped.runtime.state().stage, "stopped")
+    assert.equal(stopped.runtime.state().stopReason, "cancelled")
+    assert.deepEqual(stopped.runtime.state().changed_files, state.changed_files)
+    assert.deepEqual(stopped.runtime.state().usage, state.usage)
+    assert.equal(stopped.runtime.state().stateRevision, state.stateRevision)
+    await stopped.runtime.cancel()
+    assert.equal(stopped.runtime.state().stopReason, "cancelled", "repeated cancellation must preserve the original stop history")
+    assert.equal(stopped.entries.length, entryCount, "events after off must not persist into the stopped run")
+  } finally { stopped.cleanup() }
+
+  const complete = fixture({ config: { milestoneReview: false, finalReview: false } })
+  try {
+    await beginCheap(complete)
+    await complete.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await complete.runtime.validate("test-1")
+    await complete.runtime.completeToolBatch({ eventId: "complete-phase" })
+    const proposal = complete.runtime.state().finalProposalId
+    assert.ok(proposal)
+    assert.equal((await complete.runtime.approve(proposal)).ok, true)
+    const state = complete.runtime.state()
+    const entryCount = complete.entries.length
+    assert.equal(state.stage, "complete")
+    assert.equal(complete.runtime.observeToolCall({ id: "after-complete", name: "write", input: { path: "src/a.mjs" } }), undefined)
+    assert.equal(await complete.runtime.recordUsage({ role: "assistant", usage: { input: 1 } }), false)
+    await complete.runtime.completeToolBatch({ eventId: "after-complete-batch" })
+    assert.equal(complete.runtime.state().stage, "complete")
+    assert.equal(complete.runtime.state().stateRevision, state.stateRevision)
+    assert.equal((await complete.runtime.cancel()).action, "none")
+    assert.equal(complete.runtime.state().stage, "complete", "off must not rewrite completed history")
+    assert.equal(complete.entries.length, entryCount)
+  } finally { complete.cleanup() }
+})
+
+test("off during an in-flight tool batch prevents queued work from reviving or persisting the run", async () => {
+  let holdSnapshot = false
+  let snapshotStarted
+  let releaseSnapshot
+  const started = new Promise((resolve) => { snapshotStarted = resolve })
+  const pendingSnapshot = new Promise((resolve) => { releaseSnapshot = resolve })
+  const fx = fixture({ deps: { snapshot: async () => {
+    if (holdSnapshot) {
+      holdSnapshot = false
+      snapshotStarted()
+      await pendingSnapshot
+    }
+    return {}
+  } } })
+  try {
+    await beginCheap(fx)
+    holdSnapshot = true
+    const batch = fx.runtime.completeToolBatch({ eventId: "in-flight-batch" })
+    await started
+    await fx.runtime.cancel()
+    const entryCount = fx.entries.length
+    releaseSnapshot()
+    await batch
+    assert.equal(fx.runtime.state().stage, "stopped")
+    assert.equal(fx.runtime.state().stopReason, "cancelled")
+    assert.equal(fx.entries.length, entryCount)
+  } finally {
+    releaseSnapshot()
+    fx.cleanup()
+  }
+})
+
+test("off during model lookup prevents a queued model switch and routing persistence", async () => {
+  let holdLookup = false
+  let lookupStarted
+  let releaseLookup
+  const started = new Promise((resolve) => { lookupStarted = resolve })
+  const pendingLookup = new Promise((resolve) => { releaseLookup = resolve })
+  let switchCount = 0
+  const fx = fixture({ config: { milestoneReview: true, finalReview: true }, deps: {
+    findModel: async (model) => {
+      if (holdLookup) {
+        holdLookup = false
+        lookupStarted()
+        await pendingLookup
+      }
+      return model
+    },
+    setModel: async () => { switchCount++; return true },
+  } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.completeToolBatch({ eventId: "route-before-off" })
+    const switchesBeforeOff = switchCount
+    holdLookup = true
+    const routing = fx.runtime.turnEnd({ eventId: "route-during-off" })
+    await started
+    await fx.runtime.cancel()
+    const entryCount = fx.entries.length
+    releaseLookup()
+    assert.equal((await routing).action, "none")
+    assert.equal(fx.runtime.state().stage, "stopped")
+    assert.equal(switchCount, switchesBeforeOff)
+    assert.equal(fx.entries.length, entryCount)
+  } finally {
+    releaseLookup()
+    fx.cleanup()
+  }
+})
+
+test("initial proposal rejection waits for substantive feedback before returning to planning", async () => {
+  const fx = fixture()
+  try {
+    await fx.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: fx.root, goal: "goal", frontierModel: "f/m", cheapModel: "c/m" })
+    const first = await fx.runtime.checkpoint({ action: "submit_plan", plan: plan(fx.root) })
+    const proposal = fx.runtime.state().proposals.find((item) => item.id === first.proposalId)
+    assert.equal((await fx.runtime.rejectProposal(first.proposalId, { baseRevision: "stale", feedback: "revise" })).ok, false)
+    assert.equal(fx.runtime.state().stage, "awaiting_approval")
+    assert.equal((await fx.runtime.rejectProposal(first.proposalId, { baseRevision: proposal.baseRevision, feedback: "  " })).ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_revision")
+    assert.equal(fx.runtime.state().role, "frontier")
+    assert.equal(fx.runtime.state().revisionRequest.feedback, "")
+    assert.equal(fx.runtime.state().proposals.find((item) => item.id === first.proposalId).status, "rejected")
+    assert.equal(fx.runtime.state().stopReason, null)
+    assert.equal((await fx.runtime.provideRevisionFeedback("  ")).ok, false)
+    assert.equal((await fx.runtime.checkpoint({ action: "submit_plan", plan: plan(fx.root) })).reason, "revision-feedback-required")
+    assert.equal(fx.runtime.observeToolCall({ id: "revision-read", name: "read", input: { path: "README.md" } }), undefined)
+    for (const [name, input] of [
+      ["edit", { path: join(fx.root, "src/a.mjs") }],
+      ["write", { path: join(fx.root, ".temp-local/workflow-plan.md") }],
+      ["bash", { command: "printf no-implementation" }],
+      ["prewalk_validate", { checkId: "test-1" }],
+    ]) assert.equal(fx.runtime.observeToolCall({ id: `awaiting-feedback-${name}`, name, input })?.block, true)
+    assert.equal((await fx.runtime.provideRevisionFeedback("Use a narrower scope")).ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_plan")
+    assert.deepEqual(fx.runtime.state().revisionRequest, { kind: "initial", proposalId: first.proposalId, feedback: "Use a narrower scope" })
+    const revisedPlan = { ...plan(fx.root), hardContract: { ...plan(fx.root).hardContract, outcome: "narrower scope" } }
+    const revised = await fx.runtime.checkpoint({ action: "submit_plan", plan: revisedPlan })
+    assert.equal(revised.ok, true)
+    assert.equal(fx.runtime.state().revisionRequest, undefined)
+    assert.equal(fx.runtime.state().proposals.find((item) => item.id === first.proposalId).status, "rejected")
+    assert.equal((await fx.runtime.approve(revised.proposalId)).ok, true)
+    assert.equal(fx.runtime.state().hardContract.outcome, "narrower scope")
+  } finally { fx.cleanup() }
+})
+
+test("hard proposal rejection preserves the approved boundary until a revised proposal is approved", async () => {
+  const fx = fixture({ config: { finalReview: false, milestoneReview: false } })
+  try {
+    await beginCheap(fx)
+    fx.runtime.observeToolCall({ id: "scope-needed", name: "write", input: { path: "tests/new_test.mjs" } })
+    await fx.runtime.completeToolBatch({ eventId: "scope-needed-batch" })
+    await fx.runtime.turnEnd({ eventId: "scope-needed-turn" })
+    const original = { ...fx.runtime.state().hardContract }
+    const first = await fx.runtime.checkpoint({ action: "propose", kind: "hard", patch: { allowedPaths: ["src/", "tests/"] } })
+    const proposal = fx.runtime.state().proposals.find((item) => item.id === first.proposalId)
+    assert.equal(fx.runtime.observeToolCall({ id: "hard-gate-edit", name: "edit", input: { path: join(fx.root, "src/a.mjs") } })?.block, true)
+    assert.equal((await fx.runtime.rejectProposal(first.proposalId, { baseRevision: proposal.baseRevision, feedback: "Include only test files" })).ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_revision")
+    assert.deepEqual(fx.runtime.state().hardContract, original)
+    assert.equal((await fx.runtime.provideRevisionFeedback("Include only test files")).ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    assert.equal(fx.runtime.state().revisionRequest.feedback, "Include only test files")
+    const revised = await fx.runtime.checkpoint({ action: "propose", kind: "hard", patch: { allowedPaths: ["src/", "tests/fixtures/"] } })
+    assert.equal(revised.ok, true)
+    assert.equal(fx.runtime.state().revisionRequest, undefined)
+    assert.equal((await fx.runtime.approve(revised.proposalId)).ok, true)
+    assert.deepEqual(fx.runtime.state().hardContract.allowedPaths, ["src/", "tests/fixtures/"])
+  } finally { fx.cleanup() }
+})
+
+test("final proposal rejection removes the completion barrier and permits repair plus a fresh review", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: true } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.completeToolBatch({ eventId: "ready-for-final" })
+    await fx.runtime.turnEnd({ eventId: "final-review" })
+    const passed = await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    const rejectedProposal = fx.runtime.state().proposals.find((item) => item.id === passed.finalProposalId)
+    assert.equal(fx.runtime.observeToolCall({ id: "final-gate-edit", name: "edit", input: { path: join(fx.root, "src/a.mjs") } })?.block, true)
+    assert.equal((await fx.runtime.rejectProposal(passed.finalProposalId, { baseRevision: rejectedProposal.baseRevision, feedback: "Fix the implementation before completion" })).ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_revision")
+    assert.equal(fx.runtime.state().finalProposalId, null)
+    assert.deepEqual(fx.runtime.state().completed, [])
+    assert.equal(fx.runtime.state().reviewRecords[`phase-1:${fx.runtime.state().planRevision}:${fx.runtime.state().sourceRevision}`], undefined)
+    assert.equal((await fx.runtime.provideRevisionFeedback("Fix the implementation before completion")).ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    assert.equal((await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "repair", pendingTodoIds: ["todo-1"] })).ok, true)
+    assert.equal(fx.runtime.state().revisionRequest, undefined)
+    await fx.runtime.turnEnd({ eventId: "return-to-cheap-after-rejection" })
+    fx.setFiles({ "src/a.mjs": "repaired" })
+    fx.runtime.observeToolCall({ id: "repair-edit", name: "edit", input: { path: join(fx.root, "src/a.mjs") } })
+    fx.runtime.observeToolResult({ id: "repair-edit", name: "edit" })
+    await fx.runtime.completeToolBatch({ eventId: "repair-edit-batch" })
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.completeToolBatch({ eventId: "ready-after-repair" })
+    await fx.runtime.turnEnd({ eventId: "fresh-final-review" })
+    const freshPass = await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    assert.equal(freshPass.ok, true)
+    assert.notEqual(freshPass.finalProposalId, passed.finalProposalId)
+    assert.equal(fx.runtime.state().stage, "awaiting_final_approval")
+  } finally { fx.cleanup() }
+})
+
+test("awaiting-revision state restores and resumes on Frontier", async () => {
+  const fx = fixture()
+  try {
+    await fx.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: fx.root, goal: "goal", frontierModel: "f/m", cheapModel: "c/m" })
+    const proposed = await fx.runtime.checkpoint({ action: "submit_plan", plan: plan(fx.root) })
+    await fx.runtime.rejectProposal(proposed.proposalId)
+    assert.equal(fx.runtime.state().revisionRequest.feedback, "")
+    const restored = createPrewalkRuntime({ deps: { cwd: fx.root, getBranch: () => fx.entries, appendEntry: (type, data) => fx.entries.push({ type, data }), snapshot: async () => ({}) } })
+    assert.equal((await restored.restore({ sessionId: "session-1", workspace: fx.root })).ok, true)
+    assert.equal(restored.state().stage, "paused")
+    assert.equal(restored.state().resumeStage, "awaiting_revision")
+    assert.equal((await restored.resume()).ok, true)
+    assert.equal(restored.state().stage, "awaiting_revision")
+    assert.equal(restored.state().role, "frontier")
+    assert.deepEqual(await restored.modelSelected("f/m"), { ok: true })
+  } finally { fx.cleanup() }
+})
+
+test("off during the initial snapshot prevents a pending start from creating a run", async () => {
+  let holdSnapshot = true
+  let snapshotStarted
+  let releaseSnapshot
+  const started = new Promise((resolve) => { snapshotStarted = resolve })
+  const pendingSnapshot = new Promise((resolve) => { releaseSnapshot = resolve })
+  const fx = fixture({ deps: { snapshot: async () => {
+    if (holdSnapshot) {
+      holdSnapshot = false
+      snapshotStarted()
+      await pendingSnapshot
+    }
+    return {}
+  } } })
+  try {
+    const starting = fx.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: fx.root, goal: "goal", frontierModel: "f/m", cheapModel: "c/m" })
+    await started
+    await fx.runtime.cancel()
+    releaseSnapshot()
+    const result = await starting
+    assert.equal(result.ok, false)
+    assert.equal(result.reason, "start-cancelled")
+    assert.equal(fx.runtime.state(), undefined)
+    assert.deepEqual(fx.entries, [])
+  } finally {
+    releaseSnapshot()
+    fx.cleanup()
+  }
+})
+
+test("off after model-switch persistence suppresses its queued continuation", async () => {
+  const entries = []
+  const messages = []
+  let runtime
+  let interceptSwitch = false
+  let offPromise
+  const fx = fixture({ config: { milestoneReview: true, finalReview: false }, deps: {
+    appendEntry(type, data) {
+      entries.push({ type, data })
+      if (interceptSwitch && type === "prewalk-audit" && data.type === "model-switched") {
+        interceptSwitch = false
+        return new Promise((resolve) => queueMicrotask(() => {
+          resolve()
+          queueMicrotask(() => { offPromise = runtime.cancel() })
+        }))
+      }
+    },
+    sendMessage(message) { messages.push(message) },
+  } })
+  runtime = fx.runtime
+  try {
+    await beginCheap(fx)
+    fx.runtime.observeToolCall({ id: "switch-review", name: "edit", input: { path: join(fx.root, "package.json") } })
+    await fx.runtime.completeToolBatch({ eventId: "switch-review-batch" })
+    await fx.runtime.turnEnd({ eventId: "switch-to-frontier" })
+    const question = await fx.runtime.checkpoint({ action: "verdict", verdict: "continue", phaseId: "phase-1" })
+    assert.equal(question.ok, true)
+    const messagesBeforeOff = messages.length
+    interceptSwitch = true
+    const routed = await fx.runtime.turnEnd({ eventId: "switch-back-to-cheap" })
+    await offPromise
+    assert.equal(routed.action, "none")
+    assert.equal(fx.runtime.state().stage, "stopped")
+    assert.equal(fx.runtime.state().stopReason, "cancelled")
+    assert.equal(messages.length, messagesBeforeOff)
+  } finally { fx.cleanup() }
+})
+
+test("a repaired phase can pass again at the same revision after fresh validation", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: true } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.completeToolBatch({ eventId: "ready-before-rejected-final" })
+    await fx.runtime.turnEnd({ eventId: "first-final-review" })
+    const firstPass = await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    const proposal = fx.runtime.state().proposals.find((item) => item.id === firstPass.finalProposalId)
+    await fx.runtime.rejectProposal(firstPass.finalProposalId, { baseRevision: proposal.baseRevision, feedback: "Review the repaired evidence again" })
+    await fx.runtime.provideRevisionFeedback("Review the repaired evidence again")
+    await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "repair", pendingTodoIds: ["todo-1"] })
+    await fx.runtime.turnEnd({ eventId: "return-for-same-revision-repair" })
+
+    const revision = fx.runtime.state().sourceRevision
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    const validation = await fx.runtime.validate("test-1")
+    assert.equal(validation.status, "passed")
+    assert.equal(validation.revision, revision)
+    await fx.runtime.completeToolBatch({ eventId: "ready-after-same-revision-repair" })
+    assert.equal(fx.runtime.state().stage, "frontier_review_pending")
+    await fx.runtime.turnEnd({ eventId: "review-same-revision-repair" })
+    const secondPass = await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    assert.equal(secondPass.ok, true)
+    assert.equal(fx.runtime.state().reviewRecords[`phase-1:${fx.runtime.state().planRevision}:${revision}`].verdict, "pass")
+    assert.equal((await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })).reason, "frontier-verdict-not-allowed-in-this-stage")
+  } finally { fx.cleanup() }
+})
+
+test("human question answers require the unique current decision and record the actual answer", async () => {
+  const fx = fixture({ config: { milestoneReview: true } })
+  try {
+    const question = await requestHumanDecision(fx)
+    const proposal = fx.runtime.state().proposals.find((item) => item.id === question.proposalId)
+    assert.equal((await fx.runtime.answerQuestion(question.proposalId, "OK", { baseRevision: proposal.baseRevision })).reason, "substantive-answer-required")
+    assert.equal((await fx.runtime.answerQuestion(question.proposalId, "Use the existing /v2 endpoint.", { baseRevision: "stale" })).reason, "stale-proposal")
+    assert.equal(fx.runtime.state().stage, "awaiting_human_approval")
+
+    const answer = "Use the existing /v2 endpoint; do not change the contract."
+    const result = await fx.runtime.answerQuestion(question.proposalId, answer, { baseRevision: proposal.baseRevision })
+    assert.equal(result.ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    assert.equal(fx.runtime.state().role, "frontier")
+    assert.equal(fx.runtime.state().humanQuestion, undefined)
+    assert.equal(fx.runtime.state().proposals.find((item) => item.id === question.proposalId).status, "answered")
+    assert.equal(fx.runtime.state().proposals.find((item) => item.id === question.proposalId).answer, answer)
+    assert.equal(fx.runtime.state().important_decisions.at(-1).reason, answer)
+    assert.equal(fx.runtime.state().important_decisions.at(-1).question, proposal.patch.question)
+  } finally { fx.cleanup() }
+})
+
+test("human question answers reject ambiguous decisions and cannot reopen a run after off", async () => {
+  const ambiguous = fixture({ config: { milestoneReview: true } })
+  try {
+    const question = await requestHumanDecision(ambiguous)
+    const state = ambiguous.runtime.state()
+    const decision = state.proposals.find((item) => item.id === question.proposalId)
+    state.stateRevision += 1
+    state.proposals.push({ ...decision, id: "duplicate-pending-decision", status: "pending" })
+    ambiguous.entries.push({ type: "prewalk-state", data: { version: 1, state } })
+    const restored = createPrewalkRuntime({ deps: {
+      cwd: ambiguous.root,
+      getBranch: () => ambiguous.entries,
+      appendEntry: (type, data) => ambiguous.entries.push({ type, data }),
+      snapshot: async () => ({}),
+    } })
+    assert.equal((await restored.restore({ sessionId: "session-1", workspace: ambiguous.root })).ok, true)
+    assert.equal((await restored.resume()).ok, true)
+    assert.equal((await restored.answerQuestion(question.proposalId, "Use endpoint A.", { baseRevision: decision.baseRevision })).reason, "ambiguous-proposal")
+    assert.equal(restored.state().stage, "awaiting_human_approval")
+  } finally { ambiguous.cleanup() }
+
+  const off = fixture({ config: { milestoneReview: true } })
+  try {
+    const question = await requestHumanDecision(off)
+    await off.runtime.cancel()
+    assert.equal((await off.runtime.answerQuestion(question.proposalId, "Use endpoint A.")).reason, "run-not-active")
+    assert.equal(off.runtime.state().stage, "stopped")
+  } finally { off.cleanup() }
+})
+
+test("proposal rejection requires unique pending identity and the current hard revision", async () => {
+  const ambiguous = fixture()
+  try {
+    await ambiguous.runtime.start({ runId: "run-1", sessionId: "session-1", workspace: ambiguous.root, goal: "goal", frontierModel: "f/m", cheapModel: "c/m" })
+    const initial = await ambiguous.runtime.checkpoint({ action: "submit_plan", plan: plan(ambiguous.root) })
+    const state = ambiguous.runtime.state()
+    const proposal = state.proposals.find((item) => item.id === initial.proposalId)
+    state.stateRevision += 1
+    state.proposals.push({ ...proposal, id: "other-kind-proposal", kind: "hard", status: "pending" })
+    ambiguous.entries.push({ type: "prewalk-state", data: { version: 1, state } })
+    const restored = createPrewalkRuntime({ deps: {
+      cwd: ambiguous.root,
+      getBranch: () => ambiguous.entries,
+      appendEntry: (type, data) => ambiguous.entries.push({ type, data }),
+      snapshot: async () => ({}),
+    } })
+    await restored.restore({ sessionId: "session-1", workspace: ambiguous.root })
+    await restored.resume()
+    assert.equal((await restored.rejectProposal(initial.proposalId, { baseRevision: proposal.baseRevision })).reason, "proposal-not-current")
+  } finally { ambiguous.cleanup() }
+
+  const staleHardRevision = fixture({ config: { finalReview: false, milestoneReview: false } })
+  try {
+    await beginCheap(staleHardRevision)
+    staleHardRevision.runtime.observeToolCall({ id: "scope-review", name: "edit", input: { path: join(staleHardRevision.root, "package.json") } })
+    await staleHardRevision.runtime.completeToolBatch({ eventId: "scope-review-batch" })
+    await staleHardRevision.runtime.turnEnd({ eventId: "scope-review-turn" })
+    const pending = await staleHardRevision.runtime.checkpoint({ action: "propose", kind: "hard", patch: { allowedPaths: ["src/", "tests/"] } })
+    const state = staleHardRevision.runtime.state()
+    state.stateRevision += 1
+    state.hardRevision += 1
+    staleHardRevision.entries.push({ type: "prewalk-state", data: { version: 1, state } })
+    const restored = createPrewalkRuntime({ deps: {
+      cwd: staleHardRevision.root,
+      getBranch: () => staleHardRevision.entries,
+      appendEntry: (type, data) => staleHardRevision.entries.push({ type, data }),
+      snapshot: async () => ({}),
+    } })
+    await restored.restore({ sessionId: "session-1", workspace: staleHardRevision.root })
+    await restored.resume()
+    assert.equal((await restored.rejectProposal(pending.proposalId, { baseRevision: state.sourceRevision })).reason, "stale-proposal")
+  } finally { staleHardRevision.cleanup() }
 })

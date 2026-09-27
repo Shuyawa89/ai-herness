@@ -79,8 +79,9 @@ async function enterPlanProposal(mock, goal = "Review the task") {
 }
 
 async function enterFrontierReview(mock, goal = "Review the task") {
-  const { proposal } = await enterPlanProposal(mock, goal)
-  await mock.commands.get("prewalk").handler(`approve ${proposal.details.proposalId}`, mock.ctx)
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  await enterPlanProposal(mock, goal)
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
   mock.handlers.get("tool_call")({ toolCallId: "edit-initial", toolName: "edit", input: { path: join(mock.ctx.cwd, "src/a.mjs") } }, mock.ctx)
   mock.handlers.get("tool_result")({ toolCallId: "edit-initial", toolName: "edit", isError: false }, mock.ctx)
   await mock.handlers.get("turn_end")({ messageEntryId: "first-turn", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
@@ -140,13 +141,13 @@ test("restored runs do not reuse pre-reload turn event IDs", async () => {
   await mock.handlers.get("before_agent_start")({ prompt: "Task", systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } }, mock.ctx)
   await mock.handlers.get("turn_start")({ turnIndex: 0 }, mock.ctx)
   await mock.handlers.get("session_start")({ reason: "resume" }, mock.ctx)
-  await command("resume", mock.ctx)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "frontier_plan")
   await mock.handlers.get("turn_start")({ turnIndex: 0 }, mock.ctx)
   const state = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
   assert.equal(state.step_count, 2)
 })
 
-test("session shutdown preserves resumable state and the current branch is authoritative", async () => {
+test("session reload resumes the matching branch without a command, but never restarts a stopped task", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
   const mock = setup()
   extension(mock.pi)
@@ -156,7 +157,27 @@ test("session shutdown preserves resumable state and the current branch is autho
   const last = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
   assert.equal(last.stage, "frontier_plan")
   await mock.handlers.get("session_start")({ reason: "resume" }, mock.ctx)
-  assert.ok(mock.appended.some((entry) => entry.data?.state?.stage === "paused"))
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "frontier_plan")
+  assert.equal(mock.messages.length, 0, "restoring should wait for user input, not start an unsolicited turn")
+  await mock.commands.get("prewalk").handler("off", mock.ctx)
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "stopped")
+})
+
+test("an implementation-stage reload selects Cheap without starting an unsolicited turn", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  const continuation = await mock.tools.get("prewalk_checkpoint").execute("continue", { action: "verdict", phaseId: "phase-1", verdict: "continue" }, undefined, undefined, mock.ctx)
+  assert.equal(continuation.details.ok, true)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "cheap_pending")
+  mock.pi.currentModel = mock.ctx.model
+  const messagesBefore = mock.messages.length
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(mock.pi.currentModel.id, "cheap")
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "cheap_pending")
+  assert.equal(mock.messages.length, messagesBefore)
 })
 
 test("a stopped task can arm a separate new task in the same session", async () => {
@@ -244,7 +265,10 @@ test("a revision replaces the previewed initial plan and requires approval of th
   await mock.handlers.get("before_agent_start")(revisionPrompt, mock.ctx)
   assert.match(revisionPrompt.systemPromptOptions.appendSystemPrompt, /revised initial plan/)
   const revisedPlan = { ...plan, hardContract: { ...plan.hardContract, outcome: "Implement feature with tests" } }
-  const revised = await mock.tools.get("prewalk_checkpoint").execute("revised-plan", { action: "submit_plan", plan: revisedPlan }, undefined, undefined, mock.ctx)
+  const revisionInput = { action: "submit_plan", plan: revisedPlan }
+  assert.equal(mock.handlers.get("tool_call")({ toolCallId: "revised-plan", toolName: "prewalk_checkpoint", input: revisionInput }, mock.ctx), undefined)
+  const revised = await mock.tools.get("prewalk_checkpoint").execute("revised-plan", revisionInput, undefined, undefined, mock.ctx)
+  mock.handlers.get("tool_result")({ toolCallId: "revised-plan", toolName: "prewalk_checkpoint", isError: false }, mock.ctx)
 
   assert.equal(revised.details.ok, true)
   const pending = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.proposals
@@ -254,6 +278,81 @@ test("a revision replaces the previewed initial plan and requires approval of th
   const approved = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
   assert.equal(approved.initialApproval.proposalId, revised.details.proposalId)
   assert.equal(approved.plan.hardContract.outcome, "Implement feature with tests")
+})
+
+test("a pending plan returns to conversation after reload; revision supersedes it before approval", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal: original, plan } = await enterPlanProposal(mock, "機能を実装して")
+  const previews = mock.notices.filter(({ text }) => text.includes("目標: Implement feature")).length
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.match(mock.statuses.at(-1).text, /Awaiting approval \(plan\)/)
+  assert.ok(mock.notices.filter(({ text }) => text.includes("目標: Implement feature")).length > previews)
+  assert.equal(mock.messages.length, 0)
+  const revisionPrompt = { prompt: "テストを追加する計画に修正して", systemPromptOptions: { appendSystemPrompt: "" } }
+  await mock.handlers.get("before_agent_start")(revisionPrompt, mock.ctx)
+  assert.match(revisionPrompt.systemPromptOptions.appendSystemPrompt, /revised initial plan/)
+  const revisionInput = { action: "submit_plan", plan: { ...plan, hardContract: { ...plan.hardContract, outcome: "Implement feature with tests" } } }
+  assert.equal(mock.handlers.get("tool_call")({ toolCallId: "revision", toolName: "prewalk_checkpoint", input: revisionInput }, mock.ctx), undefined)
+  const revised = await mock.tools.get("prewalk_checkpoint").execute("revision", revisionInput, undefined, undefined, mock.ctx)
+  mock.handlers.get("tool_result")({ toolCallId: "revision", toolName: "prewalk_checkpoint", isError: false }, mock.ctx)
+  assert.equal(revised.details.ok, true)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.proposals.find((item) => item.id === original.details.proposalId).status, "superseded")
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  const approved = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
+  assert.equal(approved.initialApproval.proposalId, revised.details.proposalId)
+})
+
+test("reload selects the saved run's model before resuming, and stays paused if selection fails", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterPlanProposal(mock)
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(mock.pi.currentModel.id, "frontier")
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "awaiting_approval")
+  mock.pi.setModel = async () => false
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "paused")
+  assert.match(mock.notices.at(-1).text, /required model/)
+  mock.pi.setModel = async () => { throw new Error("model offline") }
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "paused")
+  assert.match(mock.notices.at(-1).text, /required model/)
+})
+
+test("a different session cannot restore or approve the prior session's plan", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock)
+  mock.ctx.sessionManager.getSessionId = () => "new-session"
+  await mock.handlers.get("session_start")({ reason: "switch" }, mock.ctx)
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "continue" })
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.initialApproval, null)
+  assert.equal(mock.statuses.at(-1).text, undefined)
+})
+
+test("returning to a plan branch re-displays its proposal without approving the other branch", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal } = await enterPlanProposal(mock)
+  const originalSession = mock.ctx.sessionManager.getSessionId
+  mock.ctx.sessionManager.getSessionId = () => "other-session"
+  await mock.handlers.get("session_tree")({ reason: "branch" }, mock.ctx)
+  assert.equal(mock.statuses.at(-1).text, undefined)
+  mock.ctx.sessionManager.getSessionId = originalSession
+  await mock.handlers.get("session_tree")({ reason: "branch" }, mock.ctx)
+  assert.match(mock.statuses.at(-1).text, /Awaiting approval \(plan\)/)
+  assert.ok(mock.notices.at(-1).text.includes("Implement feature"))
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.initialApproval.proposalId, proposal.details.proposalId)
 })
 
 test("affirmative words never approve injected, ambiguous, image, stale, or paused input", async () => {
@@ -289,8 +388,7 @@ test("multiple pending proposals and session mismatch cannot be approved by affi
   mock.ctx.sessionManager.getSessionId = actualSession
   const state = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
   mock.pi.appendEntry("prewalk-state", { version: 1, state: { ...state, stateRevision: state.stateRevision + 1, proposals: [...state.proposals, { ...state.proposals.at(-1), id: "another-proposal" }] } })
-  await mock.handlers.get("session_start")({ reason: "branch" }, mock.ctx)
-  await mock.commands.get("prewalk").handler("resume", mock.ctx)
+  await mock.handlers.get("session_tree")({ reason: "branch" }, mock.ctx)
   assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "continue" })
   assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.initialApproval, null)
 })
@@ -309,7 +407,6 @@ test("plan presentation follows the task language and survives restoration", asy
   assert.ok(mock.notices.at(-1).text.includes("目標: Implement feature"))
   assert.ok(!mock.notices.at(-1).text.includes("hardContract"))
   await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
-  await mock.commands.get("prewalk").handler("resume", mock.ctx)
   assert.match(readFileSync(join(mock.ctx.cwd, ".temp-local/workflow-plan.md"), "utf8"), /## (作業フェーズ|フェーズ)/)
 })
 
@@ -323,9 +420,10 @@ test("hard-boundary approval is scoped, and a decision question is not an approv
   assert.equal(hard.details.ok, true)
   assert.match(mock.statuses.at(-1).text, /Awaiting approval \(scope\)/)
   assert.ok(mock.notices.some(({ text }) => text.includes("作業範囲の変更") && text.includes("変更後") && text.includes("docs/") && !text.includes("allowedPaths")))
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  mock.pi.currentModel = mock.ctx.model
   await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
-  assert.match(mock.statuses.at(-1).text, /Paused/)
-  await mock.commands.get("prewalk").handler("resume", mock.ctx)
+  assert.equal(mock.pi.currentModel.id, "frontier", "scope approval must return to Frontier review")
   assert.match(mock.statuses.at(-1).text, /Awaiting approval \(scope\)/)
   await mock.handlers.get("input")({ text: "この変更で進めて", source: "interactive" }, mock.ctx)
   const approved = mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state
@@ -342,8 +440,8 @@ test("final review requires a fresh check and an explicit completion approval", 
   const mock = setup()
   mock.ctx.mode = "tui"; mock.ctx.hasUI = true
   extension(mock.pi)
-  const { proposal } = await enterPlanProposal(mock, "Complete the task")
-  await mock.commands.get("prewalk").handler(`approve ${proposal.details.proposalId}`, mock.ctx)
+  await enterPlanProposal(mock, "Complete the task")
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
   mock.handlers.get("tool_call")({ toolCallId: "edit-initial", toolName: "edit", input: { path: join(mock.ctx.cwd, "src/a.mjs") } }, mock.ctx)
   mock.handlers.get("tool_result")({ toolCallId: "edit-initial", toolName: "edit", isError: false }, mock.ctx)
   await mock.handlers.get("turn_end")({ messageEntryId: "initial", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
@@ -358,7 +456,6 @@ test("final review requires a fresh check and an explicit completion approval", 
   assert.equal(verdict.details.ok, true)
   assert.match(mock.statuses.at(-1).text, /Awaiting approval \(final\)/)
   await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
-  await mock.commands.get("prewalk").handler("resume", mock.ctx)
   assert.match(mock.statuses.at(-1).text, /Awaiting approval \(final\)/)
   await mock.handlers.get("input")({ text: "進めて", source: "interactive" }, mock.ctx)
   assert.equal(mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1).data.state.stage, "awaiting_final_approval")
@@ -419,7 +516,7 @@ test("idle, noninteractive, and uncertain approval controls preserve the boundar
   await command("status", mock.ctx)
   assert.match(mock.notices.at(-1).text, /idle/)
   await command("resume", mock.ctx)
-  assert.match(mock.notices.at(-1).text, /Cannot resume/)
+  assert.match(mock.notices.at(-1).text, /Usage:/)
   await command("mock/frontier mock/cheap", mock.ctx)
   await command("status", mock.ctx)
   assert.match(mock.notices.at(-1).text, /Armed/)
@@ -428,9 +525,9 @@ test("idle, noninteractive, and uncertain approval controls preserve the boundar
   await command("approve", mock.ctx)
   assert.match(mock.notices.at(-1).text, /Usage:/)
   await command("approve fake-id", mock.ctx)
-  assert.match(mock.notices.at(-1).text, /No matching/)
+  assert.match(mock.notices.at(-1).text, /Usage:/)
   await command("reject fake-id", mock.ctx)
-  assert.match(mock.notices.at(-1).text, /No matching/)
+  assert.match(mock.notices.at(-1).text, /Usage:/)
   const planPath = join(mock.ctx.cwd, ".temp-local/workflow-plan.md")
   mock.handlers.get("tool_call")({ toolCallId: "write-plan", toolName: "write", input: { path: planPath } }, mock.ctx)
   mock.handlers.get("tool_result")({ toolCallId: "write-plan", toolName: "write", isError: false }, mock.ctx)
@@ -450,7 +547,7 @@ test("explicit English instruction overrides a Japanese task for plan presentati
   assert.match(readFileSync(join(mock.ctx.cwd, ".temp-local/workflow-plan.md"), "utf8"), /## Phases/)
 })
 
-test("review and paused stages update the status without falsely highlighting build", async () => {
+test("review stage is restored without falsely highlighting build", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
   const mock = setup()
   mock.ctx.mode = "tui"; mock.ctx.hasUI = true
@@ -459,8 +556,427 @@ test("review and paused stages update the status without falsely highlighting bu
   assert.match(mock.statuses.at(-1).text, /<bold>Review<\/bold>/)
   assert.match(mock.statuses.at(-1).text, /<dim>Build \(1\/1\)<\/dim>/)
   await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
-  assert.match(mock.statuses.at(-1).text, /<bold>Paused<\/bold>/)
-  assert.doesNotMatch(mock.statuses.at(-1).text, /<bold>Review<\/bold>/)
+  assert.match(mock.statuses.at(-1).text, /<bold>Review<\/bold>/)
+  assert.doesNotMatch(mock.statuses.at(-1).text, /<bold>Build<\/bold>/)
+})
+
+function latestState(mock) {
+  return mock.appended.filter((entry) => entry.customType === "prewalk-state").at(-1)?.data.state
+}
+
+async function enterFinalProposal(mock) {
+  await enterFrontierReview(mock, "機能を実装して")
+  await mock.tools.get("prewalk_checkpoint").execute("continue", { action: "verdict", phaseId: "phase-1", verdict: "continue" }, undefined, undefined, mock.ctx)
+  await mock.handlers.get("turn_end")({ messageEntryId: "continue", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
+  await mock.tools.get("prewalk_validate").execute("check", { checkId: "check-1" })
+  await mock.tools.get("prewalk_checkpoint").execute("ready", { action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] }, undefined, undefined, mock.ctx)
+  await mock.handlers.get("turn_end")({ messageEntryId: "ready-final", toolResultEntryIds: ["ready"], message: { role: "assistant" } }, mock.ctx)
+  const result = await mock.tools.get("prewalk_checkpoint").execute("pass", { action: "verdict", phaseId: "phase-1", verdict: "pass" }, undefined, undefined, mock.ctx)
+  assert.equal(result.details.ok, true)
+}
+
+test("off and reload leave ordinary tools, plan files, and turns untouched", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock)
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  mock.handlers.get("tool_call")({ toolCallId: "late-edit", toolName: "edit", input: { path: "src/a.mjs" } }, mock.ctx)
+  await mock.commands.get("prewalk").handler("off", mock.ctx)
+  const stopped = latestState(mock)
+  const planPath = join(mock.ctx.cwd, ".temp-local/workflow-plan.md")
+  const planBefore = readFileSync(planPath, "utf8")
+  for (const reload of [false, true]) {
+    if (reload) await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+    const entries = mock.appended.length, messages = mock.messages.length, notices = mock.notices.length
+    const prompt = { prompt: "普通の作業を続けて", systemPromptOptions: { appendSystemPrompt: "" } }
+    await mock.handlers.get("before_agent_start")(prompt, mock.ctx)
+    await mock.handlers.get("turn_start")({}, mock.ctx)
+    for (const toolName of ["read", "bash", "edit", "write"]) {
+      assert.equal(mock.handlers.get("tool_call")({ toolCallId: `ordinary-${toolName}`, toolName, input: { path: "src/a.mjs", command: "pwd" } }, mock.ctx), undefined)
+    }
+    mock.handlers.get("tool_result")({ toolCallId: "late-edit", toolName: "edit", isError: false }, mock.ctx)
+    mock.handlers.get("tool_result")({ toolCallId: "late-checkpoint", toolName: "prewalk_checkpoint", isError: false }, mock.ctx)
+    await mock.handlers.get("turn_end")({ messageEntryId: `ordinary-${reload}`, toolResultEntryIds: ["late-edit"], message: { role: "assistant", usage: { input: 3 } } }, mock.ctx)
+    await mock.handlers.get("thinking_level_select")({}, mock.ctx)
+    assert.equal(prompt.systemPromptOptions.appendSystemPrompt, "")
+    assert.equal(mock.appended.length, entries)
+    assert.equal(mock.messages.length, messages)
+    assert.equal(mock.notices.length, notices)
+    assert.equal(mock.statuses.at(-1).text, undefined)
+    assert.deepEqual(latestState(mock), stopped)
+    assert.equal(readFileSync(planPath, "utf8"), planBefore)
+  }
+})
+
+test("NG keeps Prewalk active, asks once, restores the conversation, and requires a revised plan", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal, plan } = await enterPlanProposal(mock, "機能を実装して")
+  assert.match(mock.notices.at(-1).text, /OK.*NG/)
+  const messages = mock.messages.length
+  assert.deepEqual(await mock.handlers.get("input")({ text: "NG", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.equal(latestState(mock).stopReason, null)
+  assert.equal(latestState(mock).proposals.find((item) => item.id === proposal.details.proposalId).status, "rejected")
+  assert.match(mock.notices.at(-1).text, /変更したい点/)
+  assert.equal(mock.messages.length, messages)
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).initialApproval, null)
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.match(mock.statuses.at(-1).text, /Awaiting feedback/)
+  const result = await mock.handlers.get("input")({ text: "変更範囲をもっと小さくして", source: "interactive" }, mock.ctx)
+  assert.deepEqual(result, { action: "continue" })
+  assert.equal(latestState(mock).stage, "frontier_plan")
+  const prompt = { prompt: "変更範囲をもっと小さくして", systemPromptOptions: { appendSystemPrompt: "" } }
+  await mock.handlers.get("before_agent_start")(prompt, mock.ctx)
+  assert.match(prompt.systemPromptOptions.appendSystemPrompt, /Japanese/)
+  assert.match(prompt.systemPromptOptions.appendSystemPrompt, /変更範囲をもっと小さくして/)
+  const revised = await mock.tools.get("prewalk_checkpoint").execute("revised", { action: "submit_plan", plan }, undefined, undefined, mock.ctx)
+  assert.equal(revised.details.ok, true)
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).initialApproval.proposalId, revised.details.proposalId)
+})
+
+test("NG with feedback revises without asking again, and injected or conditional answers never approve", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock, "機能を実装して")
+  for (const event of [
+    { text: "NG", source: "extension" }, { text: "NG", source: "rpc" },
+    { text: '引用: "NG"', source: "interactive" }, { text: "OK、ただしDBは触らないで", source: "interactive" },
+  ]) {
+    await mock.handlers.get("input")(event, mock.ctx)
+    assert.equal(latestState(mock).stage, "awaiting_approval")
+    assert.equal(latestState(mock).initialApproval, null)
+  }
+  const notices = mock.notices.length
+  assert.deepEqual(await mock.handlers.get("input")({ text: "NG、テストを追加して", source: "interactive" }, mock.ctx), { action: "continue" })
+  assert.equal(latestState(mock).stage, "frontier_plan")
+  assert.match(latestState(mock).revisionRequest.feedback, /テストを追加して/)
+  assert.equal(mock.notices.slice(notices).some(({ text }) => text.includes("変更したい点")), false)
+})
+
+test("NG on scope or final approval never terminates the run or applies the rejected proposal", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  for (const kind of ["hard", "final"]) {
+    const mock = setup()
+    extension(mock.pi)
+    if (kind === "hard") {
+      await enterFrontierReview(mock)
+      await mock.tools.get("prewalk_checkpoint").execute("scope", { action: "propose", kind: "hard", patch: { allowedPaths: ["src/", "docs/"] } }, undefined, undefined, mock.ctx)
+    } else await enterFinalProposal(mock)
+    await mock.handlers.get("input")({ text: "NG", source: "interactive" }, mock.ctx)
+    assert.equal(latestState(mock).stage, "awaiting_revision")
+    assert.equal(latestState(mock).revisionRequest.kind, kind)
+    assert.deepEqual(latestState(mock).hardContract.allowedPaths, ["src/"])
+    assert.notEqual(latestState(mock).stage, "complete")
+    const feedback = "テストを追加する方針に修正して"
+    await mock.handlers.get("input")({ text: feedback, source: "interactive" }, mock.ctx)
+    assert.equal(latestState(mock).stage, "frontier_review")
+    const context = await mock.handlers.get("context")({ messages: [{ role: "user", content: feedback }] }, mock.ctx)
+    assert.ok(JSON.stringify(context).includes(feedback))
+  }
+})
+
+test("ordinary scope and final revision feedback returns to review without an ID", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  for (const kind of ["hard", "final"]) {
+    const mock = setup()
+    extension(mock.pi)
+    if (kind === "hard") {
+      await enterFrontierReview(mock)
+      await mock.tools.get("prewalk_checkpoint").execute("scope", { action: "propose", kind: "hard", patch: { allowedPaths: ["src/", "docs/"] } }, undefined, undefined, mock.ctx)
+    } else await enterFinalProposal(mock)
+    assert.deepEqual(await mock.handlers.get("input")({ text: "変更範囲を修正して", source: "interactive" }, mock.ctx), { action: "continue" })
+    assert.equal(latestState(mock).stage, "frontier_review")
+    assert.deepEqual(latestState(mock).hardContract.allowedPaths, ["src/"])
+  }
+})
+
+test("session language survives short prompts, revisions, and reload; explicit preference wins", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  for (const prompt of ["OK", "ls", "Implement the feature"]) {
+    const mock = setup()
+    mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+    mock.appended.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "計画について相談したいです" }] } })
+    extension(mock.pi)
+    const { plan } = await enterPlanProposal(mock, prompt)
+    assert.equal(latestState(mock).displayLanguage, "ja")
+    assert.match(mock.notices.at(-1).text, /目標:/)
+    const revision = { prompt: "テストも追加して", systemPromptOptions: { appendSystemPrompt: "" } }
+    await mock.handlers.get("before_agent_start")(revision, mock.ctx)
+    assert.match(revision.systemPromptOptions.appendSystemPrompt, /Japanese/)
+    await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+    assert.equal(latestState(mock).displayLanguage, "ja")
+    const explicit = { prompt: "Please write the plan in English", systemPromptOptions: { appendSystemPrompt: "" } }
+    await mock.handlers.get("before_agent_start")(explicit, mock.ctx)
+    assert.match(explicit.systemPromptOptions.appendSystemPrompt, /English/)
+    await mock.tools.get("prewalk_checkpoint").execute("english", { action: "submit_plan", plan }, undefined, undefined, mock.ctx)
+    assert.match(mock.notices.at(-1).text, /Outcome:/)
+  }
+})
+
+test("a paused restoration retries on direct input without resume or silently consuming approval", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock, "機能を実装して")
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  let attempts = 0
+  mock.pi.setModel = async () => { attempts++; return false }
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "paused")
+  assert.match(mock.notices.at(-1).text, /モデル/)
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(attempts, 2)
+  mock.pi.setModel = async (model) => { attempts++; mock.ctx.model = model; return true }
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "awaiting_approval")
+  assert.equal(latestState(mock).initialApproval, null, "a newly redisplayed proposal needs a new reply")
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "frontier_initial")
+})
+
+test("substantive answers to decision questions return to review while OK and NG leave them unanswered", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock, "質問を確認して")
+  await mock.tools.get("prewalk_checkpoint").execute("question", { action: "verdict", verdict: "needs-human", reason: "どの API を使いますか？" }, undefined, undefined, mock.ctx)
+  for (const text of ["OK", "NG", "進めて"]) {
+    await mock.handlers.get("input")({ text, source: "interactive" }, mock.ctx)
+    assert.equal(latestState(mock).stage, "awaiting_human_approval")
+  }
+  assert.deepEqual(await mock.handlers.get("input")({ text: "既存の API を使ってください", source: "interactive" }, mock.ctx), { action: "continue" })
+  assert.equal(latestState(mock).stage, "frontier_review")
+  assert.ok(JSON.stringify(latestState(mock).important_decisions).includes("既存の API を使ってください"))
+})
+
+test("failed model selection retains NG feedback and retries without asking for it again", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock, "機能を実装して")
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  mock.pi.setModel = async () => false
+  await mock.handlers.get("input")({ text: "NG、範囲を小さくして", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.equal(latestState(mock).revisionRequest.feedback, "範囲を小さくして")
+  mock.pi.setModel = async (model) => { mock.ctx.model = model; return true }
+  const notices = mock.notices.length
+  const result = await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "frontier_plan")
+  assert.equal(latestState(mock).initialApproval, null)
+  assert.equal(latestState(mock).revisionRequest.feedback, "範囲を小さくして")
+  assert.deepEqual(result, { action: "transform", text: "範囲を小さくして" })
+  assert.equal(mock.notices.slice(notices).some(({ text }) => text.includes("変更したい点")), false)
+})
+
+test("off while starting or arming never starts a run afterwards", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+  const starting = mock.handlers.get("before_agent_start")({ prompt: "機能を実装して", systemPromptOptions: { appendSystemPrompt: "" } }, mock.ctx)
+  await mock.commands.get("prewalk").handler("off", mock.ctx)
+  await starting
+  assert.ok(!latestState(mock) || latestState(mock).stage === "stopped")
+  let release
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  mock.pi.setModel = (model) => model.id === "frontier" ? new Promise((resolve) => {
+    release = () => { mock.ctx.model = model; resolve(true) }
+  }) : Promise.resolve((mock.ctx.model = model, true))
+  const arming = mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+  while (!release) await Promise.resolve()
+  const off = mock.commands.get("prewalk").handler("off", mock.ctx)
+  release()
+  await Promise.all([arming, off])
+  assert.equal(mock.ctx.model.id, "cheap", "off must settle an in-flight host switch without leaving its target selected")
+  await mock.commands.get("prewalk").handler("status", mock.ctx)
+  assert.doesNotMatch(mock.notices.at(-1).text, /Armed/)
+})
+
+test("feedback supplied after bare NG is retained when model selection fails", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  await enterPlanProposal(mock, "機能を実装して")
+  await mock.handlers.get("input")({ text: "NG", source: "interactive" }, mock.ctx)
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  mock.pi.setModel = async () => false
+  await mock.handlers.get("input")({ text: "変更範囲を絞って", source: "interactive" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.equal(latestState(mock).revisionRequest.feedback, "変更範囲を絞って")
+  mock.pi.setModel = async (model) => { mock.ctx.model = model; return true }
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "transform", text: "変更範囲を絞って" })
+})
+
+test("a stale turn end cannot write usage or route a restored runtime", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  let release, holding = true
+  const append = mock.pi.appendEntry
+  mock.pi.appendEntry = (type, data) => {
+    append(type, data)
+    if (holding && type === "prewalk-state") {
+      holding = false
+      return new Promise((resolve) => { release = resolve })
+    }
+  }
+  const oldTurn = mock.handlers.get("turn_end")({ messageEntryId: "old", toolResultEntryIds: ["old-tool"], message: { role: "assistant", usage: { input: 99 } } }, mock.ctx)
+  while (!release) await Promise.resolve()
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  const state = latestState(mock), entryCount = mock.appended.length, messages = mock.messages.length
+  release()
+  await oldTurn
+  assert.deepEqual(latestState(mock), state)
+  assert.equal(mock.appended.length, entryCount)
+  assert.equal(mock.messages.length, messages)
+})
+
+test("off preserves a user's model choice made while a host switch is settling", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  let release
+  mock.pi.setModel = async (model) => {
+    if (model.id === "frontier") await new Promise((resolve) => { release = resolve })
+    mock.ctx.model = model
+    await mock.handlers.get("model_select")({ model, source: "set" }, mock.ctx)
+    return true
+  }
+  const arming = mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+  while (!release) await Promise.resolve()
+  const off = mock.commands.get("prewalk").handler("off", mock.ctx)
+  const manual = { provider: "mock", id: "manual" }
+  const find = mock.ctx.modelRegistry.find
+  mock.ctx.modelRegistry.find = (provider, id) => id === "manual" ? manual : find(provider, id)
+  mock.ctx.model = manual
+  await mock.handlers.get("model_select")({ model: mock.ctx.model, source: "cycle" }, mock.ctx)
+  await release()
+  await Promise.all([arming, off])
+  assert.equal(mock.ctx.model.id, "manual")
+})
+
+test("off respects a manual selection of the pending target, including Pi's set source", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  for (const source of ["cycle", "set"]) {
+    const mock = setup()
+    extension(mock.pi)
+    mock.ctx.model = { provider: "mock", id: "cheap" }
+    let release
+    mock.pi.setModel = async (model) => {
+      if (model.id === "frontier" && !release) await new Promise((resolve) => { release = resolve })
+      mock.ctx.model = model
+      await mock.handlers.get("model_select")({ model, source: "set" }, mock.ctx)
+      return true
+    }
+    const arming = mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+    while (!release) await Promise.resolve()
+    const off = mock.commands.get("prewalk").handler("off", mock.ctx)
+    mock.ctx.model = { provider: "mock", id: "frontier" }
+    await mock.handlers.get("model_select")({ model: mock.ctx.model, source }, mock.ctx)
+    release()
+    await Promise.all([arming, off])
+    assert.equal(mock.ctx.model.id, "frontier", source)
+  }
+})
+
+test("off rechecks the latest human choice after its restoration switch settles", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  const manual = { provider: "mock", id: "manual" }
+  const find = mock.ctx.modelRegistry.find
+  mock.ctx.modelRegistry.find = (provider, id) => id === "manual" ? manual : find(provider, id)
+  let releaseInitial, releaseRestore
+  const switches = []
+  mock.pi.setModel = async (model) => {
+    switches.push(model.id)
+    if (model.id === "frontier") await new Promise((resolve) => { releaseInitial = resolve })
+    if (model.id === "cheap") await new Promise((resolve) => { releaseRestore = resolve })
+    mock.ctx.model = model
+    await mock.handlers.get("model_select")({ model, source: "set" }, mock.ctx)
+    return true
+  }
+  const arming = mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+  while (!releaseInitial) await Promise.resolve()
+  const off = mock.commands.get("prewalk").handler("off", mock.ctx)
+  releaseInitial()
+  while (!releaseRestore) await Promise.resolve()
+  mock.ctx.model = manual
+  await mock.handlers.get("model_select")({ model: manual, source: "set" }, mock.ctx)
+  releaseRestore()
+  await Promise.all([arming, off])
+  assert.equal(mock.ctx.model.id, "manual")
+  assert.deepEqual(switches, ["frontier", "cheap", "manual"])
+})
+
+test("off during model-select event delivery retains the choice from before the host assignment", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  mock.ctx.model = { provider: "mock", id: "cheap" }
+  let releaseEvent
+  mock.pi.setModel = async (model) => {
+    const previousModel = mock.ctx.model
+    mock.ctx.model = model
+    // Pi changes its model before awaiting extension model_select handlers.
+    if (model.id === "frontier") await new Promise((resolve) => { releaseEvent = resolve })
+    await mock.handlers.get("model_select")({ model, previousModel, source: "set" }, mock.ctx)
+    return true
+  }
+  const arming = mock.commands.get("prewalk").handler("mock/frontier mock/cheap", mock.ctx)
+  while (!releaseEvent) await Promise.resolve()
+  assert.equal(mock.ctx.model.id, "frontier")
+  const off = mock.commands.get("prewalk").handler("off", mock.ctx)
+  releaseEvent()
+  await Promise.all([arming, off])
+  assert.equal(mock.ctx.model.id, "cheap")
+})
+
+test("assistant conversation language is a fallback, not an explicit user preference", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  mock.appended.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "この計画で進めますか？" }] } })
+  extension(mock.pi)
+  await enterPlanProposal(mock, "OK")
+  assert.equal(latestState(mock).displayLanguage, "ja")
+})
+
+test("removed commands cannot mutate a pending or stopped run and are absent from guidance", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal } = await enterPlanProposal(mock)
+  for (const stopped of [false, true]) {
+    if (stopped) await mock.commands.get("prewalk").handler("off", mock.ctx)
+    const state = latestState(mock)
+    for (const command of [`approve ${proposal.details.proposalId}`, `reject ${proposal.details.proposalId}`, "resume"]) {
+      await mock.commands.get("prewalk").handler(command, mock.ctx)
+      assert.match(mock.notices.at(-1).text, /Usage:/)
+      assert.deepEqual(latestState(mock), state)
+    }
+  }
+  assert.doesNotMatch(mock.tools.get("prewalk_checkpoint").description, /\/prewalk (approve|reject|resume)/)
+  const source = readFileSync(join(root, "extensions/pi-prewalk.ts"), "utf8")
+  assert.doesNotMatch(source, /\/prewalk (approve|reject|resume)|command === "(?:approve|reject|resume)"/)
 })
 
 test("installed Pi loader loads the extension without a session or credentials", () => {
