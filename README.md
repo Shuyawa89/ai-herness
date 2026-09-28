@@ -7,7 +7,8 @@ Claude Code、Codex、Pi で共有する個人用の指示と Agent Skills。
 ## 管理するもの
 
 - `AGENTS.md`: グローバル指示の単一の source of truth。
-- `skills/`: Agent Skills の `SKILL.md` 形式に沿ったクロスエージェント Skill。
+- `skills/`: Agent Skills の `SKILL.md` 形式に沿った共有 Skill の正本。必要な Codex policy metadata もここに置く。
+- `skill-variants/explicit/`: 明示呼び出し限定 Skill に `disable-model-invocation: true` を加えた Claude Code / Pi 向け variant。`SKILL.md` と正本の一致はテストで検証する。
 - `extensions/`: バージョン管理された Pi extension。Pi が自動読込する。
 - `bootstrap`: 新しいマシン向けの安全で再現可能なセットアップ。
 
@@ -18,15 +19,21 @@ bootstrap が接続するもの:
 ~/.codex/AGENTS.md    -> <repo>/AGENTS.md
 ~/.pi/agent/AGENTS.md -> <repo>/AGENTS.md
 
+# 通常の共有 Skill
 ~/.claude/skills/<name> -> <repo>/skills/<name>
 ~/.codex/skills/<name>  -> <repo>/skills/<name>
 ~/.agents/skills/<name> -> <repo>/skills/<name>
+
+# 明示呼び出し限定の Skill
+~/.claude/skills/<name> -> <repo>/skill-variants/explicit/<name>
+~/.codex/skills/<name>  -> <repo>/skills/<name>
+~/.agents/skills/<name> -> <repo>/skill-variants/explicit/<name>
 
 ~/.pi/agent/extensions/ai-harness-prewalk.ts
   -> <repo>/extensions/pi-prewalk.ts
 ```
 
-Pi は `~/.agents/skills` を直接読む。Codex の system skill には触れず、同名の harness skill が競合した場合のみインストールを停止する。
+bootstrap の allowlist にある Skill だけを配布する。通常は `skills/<name>` の正本を3ツールへリンクし、明示呼び出し限定の Skill だけ上記の tool-specific source を使う。Pi は `~/.agents/skills` を直接読む。Codex の system skill には触れず、同名の harness skill が競合した場合のみインストールを停止する。
 
 ## 別マシンでのセットアップ
 
@@ -65,12 +72,30 @@ bootstrap は管理リンクの manifest を `${XDG_STATE_HOME:-~/.local/state}/
 
 ## 共有 Skill の追加・更新
 
-1. `skills/<name>/SKILL.md` と必要なファイルを追加・更新する。
-2. シークレット、危険なコマンド、マシン固有のパスがないか確認する。
-3. `./bootstrap` を実行して不足しているツールごとのリンクを作る。
-4. `./bootstrap --check` を実行してから、レビュー済みの変更をコミットする。
+1. `skills/<name>/SKILL.md` と必要なファイルを正本として追加・更新する。
+2. 明示呼び出し限定にする場合は、Codex 用の `agents/openai.yaml` と、Claude Code / Pi 用の `skill-variants/explicit/<name>` を追加・更新する。variant の `SKILL.md` は制御用 frontmatter 以外が正本と一致するように保つ。
+3. シークレット、危険なコマンド、マシン固有のパスがないか確認する。
+4. `./bootstrap` を実行して不足しているツールごとのリンクを作る。
+5. `./bootstrap --check` を実行してから、レビュー済みの変更をコミットする。
 
 一部の skill インストーラはリポジトリ外に独自の lock ファイルを持ち、更新時に管理リンクを置き換えることがある。`--check` が drift を検出したら、上流の変更を確認し、意図したバージョンを `skills/` に取り込んでから bootstrap を再実行する。
+
+## 理解・設計確認 Skill
+
+`understand` と `design-check` は通常の依頼では自動使用せず、必要なときだけ明示的に呼び出す。
+
+Codex は `skills/<name>` の正本を読み、`agents/openai.yaml` の `allow_implicit_invocation: false` で暗黙呼び出しを無効にする。Claude Code と Pi は、`disable-model-invocation: true` を追加した `skill-variants/explicit/<name>` を読む。この variant の `SKILL.md` は、制御用 frontmatter を除いて正本と一致することをテストで検証する。
+
+- `understand`: 分からない実装や概念を、目的と具体例から始めて必要最小限の技術要素へ段階的に説明する。
+- `design-check`: コードを書く前に、完成条件、責務、データフロー、設計判断、見落としやすい懸念を簡潔に整理する。
+
+| ツール | `understand` の例 | `design-check` の例 |
+| --- | --- | --- |
+| Claude Code | `/understand Transactionをここに置く理由` | `/design-check このIssueの実装方針` |
+| Codex | `$understand Transactionをここに置く理由` | `$design-check このIssueの実装方針` |
+| Pi | `/skill:understand Transactionをここに置く理由` | `/skill:design-check このIssueの実装方針` |
+
+Pi 向けの variant は `~/.agents/skills` にリンクされ、Pi がそこから直接読み込む。
 
 ## Pi Prewalk
 
@@ -96,7 +121,7 @@ pi
 
 選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に計画と scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
 
-`skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。配布する Skill は `bootstrap` 冒頭の allowlist のみ。追加したい skill はそこに名前を加える。ハーネスは環境固有の skill もモデル選択も Git に含まない。
+`skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。配布する Skill は `bootstrap` 冒頭の allowlist のみ。追加したい skill はそこに名前を加える。通常は正本をそのまま配布し、明示呼び出し限定の Skill には上記の tool-specific source を使う。ハーネスは環境固有の skill もモデル選択も Git に含まない。
 
 
 現在の依頼の言葉が役割と Skill を一つ選ぶ。`/workflow` のようなコマンド語彙は強制しない。Planner の承認と完了判断は会話の中で人間が行う gate であり、実装フェーズへ切り替える。

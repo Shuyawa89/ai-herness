@@ -7,7 +7,8 @@ Shared personal instructions and Agent Skills for Claude Code, Codex, and Pi.
 ## What is managed
 
 - `AGENTS.md`: the single source of truth for global instructions.
-- `skills/`: cross-agent skills using the Agent Skills `SKILL.md` format.
+- `skills/`: canonical shared skills using the Agent Skills `SKILL.md` format, including Codex policy metadata where needed.
+- `skill-variants/explicit/`: Claude Code and Pi variants that add `disable-model-invocation: true` to explicit-only skills. Tests enforce `SKILL.md` parity with the canonical skills.
 - `extensions/`: versioned Pi extensions, loaded automatically by Pi.
 - `bootstrap`: safe, repeatable setup for a new machine.
 
@@ -18,15 +19,21 @@ The bootstrap script connects:
 ~/.codex/AGENTS.md    -> <repo>/AGENTS.md
 ~/.pi/agent/AGENTS.md -> <repo>/AGENTS.md
 
+# Ordinary shared skills
 ~/.claude/skills/<name> -> <repo>/skills/<name>
 ~/.codex/skills/<name>  -> <repo>/skills/<name>
 ~/.agents/skills/<name> -> <repo>/skills/<name>
+
+# Explicit-only skills
+~/.claude/skills/<name> -> <repo>/skill-variants/explicit/<name>
+~/.codex/skills/<name>  -> <repo>/skills/<name>
+~/.agents/skills/<name> -> <repo>/skill-variants/explicit/<name>
 
 ~/.pi/agent/extensions/ai-harness-prewalk.ts
   -> <repo>/extensions/pi-prewalk.ts
 ```
 
-Pi reads `~/.agents/skills` directly. Codex system skills remain untouched; only a same-name harness-skill conflict stops installation.
+Only skills on the bootstrap allowlist are distributed. Normally, all three tools receive the canonical `skills/<name>` directory; only explicit-only skills use the tool-specific sources shown above. Pi reads `~/.agents/skills` directly. Codex system skills remain untouched; only a same-name harness-skill conflict stops installation.
 
 ## Set up another machine
 
@@ -65,12 +72,30 @@ Third-party material and its license details are recorded in `THIRD_PARTY_NOTICE
 
 ## Add or update a shared skill
 
-1. Add or update `skills/<name>/SKILL.md` and its supporting files.
-2. Review the skill for secrets, unsafe commands, and machine-specific paths.
-3. Run `./bootstrap` to create missing per-tool links.
-4. Run `./bootstrap --check`, then commit the reviewed change.
+1. Add or update the canonical `skills/<name>/SKILL.md` and its supporting files.
+2. For an explicit-only skill, add or update its Codex `agents/openai.yaml` and Claude Code / Pi `skill-variants/explicit/<name>`. Keep the variant's `SKILL.md` identical to the canonical skill except for the control frontmatter.
+3. Review the skill for secrets, unsafe commands, and machine-specific paths.
+4. Run `./bootstrap` to create missing per-tool links.
+5. Run `./bootstrap --check`, then commit the reviewed change.
 
 Some skill installers maintain their own lock files outside this repository and may replace a managed link during an update. If `--check` detects drift, review the upstream change, copy the intended version into `skills/`, and run the bootstrap again.
+
+## Understanding and design-check skills
+
+`understand` and `design-check` are never selected automatically for ordinary requests. Invoke them explicitly when needed.
+
+Codex reads the canonical `skills/<name>` directory and disables implicit invocation through `allow_implicit_invocation: false` in `agents/openai.yaml`. Claude Code and Pi read `skill-variants/explicit/<name>`, which adds `disable-model-invocation: true`. Tests verify that each variant's `SKILL.md` otherwise matches its canonical skill.
+
+- `understand`: explains an unfamiliar implementation or concept progressively, starting with the purpose and one concrete example before introducing the minimum technical detail.
+- `design-check`: concisely identifies the end state, responsibilities, data flow, design decisions, and likely blind spots before any code is written.
+
+| Tool | `understand` example | `design-check` example |
+| --- | --- | --- |
+| Claude Code | `/understand Why is the transaction here?` | `/design-check Review the approach for this issue` |
+| Codex | `$understand Why is the transaction here?` | `$design-check Review the approach for this issue` |
+| Pi | `/skill:understand Why is the transaction here?` | `/skill:design-check Review the approach for this issue` |
+
+The Pi variants are linked into `~/.agents/skills`, which Pi reads directly.
 
 ## Pi Prewalk
 
@@ -95,7 +120,7 @@ Then run `/prewalk` before submitting the task. It resolves the route from the l
 
 The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
 
-`skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. Only the Skill allowlist at the top of `bootstrap` is linked into each tool; add a name there to distribute another skill. The harness ships no environment-specific skills or model choices.
+`skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. Only the Skill allowlist at the top of `bootstrap` is linked into each tool; add a name there to distribute another skill. Canonical sources are used by default, while explicit-only skills use the tool-specific sources described above. The harness ships no environment-specific skills or model choices.
 
 The current request's language selects one role and one Skill; the harness does not force a remembered `/workflow` command vocabulary. Planner approval and final completion remain conversational human gates. For substantial Pi implementation work, run `/prewalk` before the task to use the frontier-to-worker handoff.
 
