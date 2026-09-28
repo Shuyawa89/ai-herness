@@ -386,6 +386,7 @@ SKILL_ALLOWLIST=(
   promoter
   prewalk
   harness-workflow
+  consulting-pptx-skill
 )
 
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"

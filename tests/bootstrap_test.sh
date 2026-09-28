@@ -77,6 +77,9 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.pi/agent/extensions/prewalk-core.mjs" "$canonical_repo/extensions/prewalk-core.mjs"
   assert_link "$user_home/.claude/skills/explore" "$canonical_repo/skills/explore"
   assert_link "$user_home/.codex/skills/explore" "$canonical_repo/skills/explore"
+  assert_link "$user_home/.claude/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.agents/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.codex/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
@@ -177,7 +180,9 @@ test_removed_skill_is_detected_and_cleaned() {
   mkdir -p "$case_root" "$user_home"
   cp -R "$REPO_ROOT" "$copied_repo"
   env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" >/dev/null
-  sed -i '' '/^  explore$/d' "$copied_repo/bootstrap"
+  sed '/^  explore$/d' "$copied_repo/bootstrap" > "$copied_repo/bootstrap.tmp"
+  mv "$copied_repo/bootstrap.tmp" "$copied_repo/bootstrap"
+  chmod +x "$copied_repo/bootstrap"
 
   expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" --check
   env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" >/dev/null
