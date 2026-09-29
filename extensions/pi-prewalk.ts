@@ -611,7 +611,7 @@ export default function (pi: ExtensionAPI) {
         const state = snapshotState()
         if (!state) { ctx.ui.notify(armed ? `Armed for next user prompt: ${armed.frontierModel} -> ${armed.cheapModel}` : "Prewalk idle", "info"); return }
         const proposal = pendingProposal(state)
-        ctx.ui.notify(`${display({ ...runtime.status(), frontierModel: state.frontierModel, cheapModel: state.cheapModel })}\n\n${proposal ? approvalText(state, proposal) : `${label(state, "Plan", "計画")}:\n${state.plan ? planSummary(state, state.plan).join("\n") : state.goal}`}`, "info")
+        ctx.ui.notify(`${display({ ...runtime.status(), frontierModel: state.frontierModel, cheapModel: state.cheapModel })}\n\n${proposal ? approvalText(state, proposal) : `${label(state, "Plan", "計画")}:\n${state.plan ? planSummary(state, { ...state.plan, hardContract: state.hardContract, softPlan: state.softPlan, phases: state.phases }).join("\n") : state.goal}`}`, "info")
         if (proposal) presentPending(ctx)
         return
       }

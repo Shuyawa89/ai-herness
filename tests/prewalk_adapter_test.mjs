@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -647,6 +647,7 @@ test("a mid-work revision shows changed checks and resumes Cheap only after huma
   const newPlan = structuredClone(current.plan)
   newPlan.phases[0].checks[0].args = ["-e", "process.exit(1)"]
   newPlan.phases[0].checks[0].required = false
+  newPlan.phases[0].evidenceRequired = ["src/a.mjs"]
   const revised = await mock.tools.get("prewalk_checkpoint").execute("proposal", { action: "propose", kind: "plan", patch: newPlan }, undefined, undefined, mock.ctx)
   assert.equal(revised.details.ok, true)
   assert.match(mock.notices.at(-1).text, /process\.exit\(0\)/)
@@ -677,6 +678,7 @@ test("mid-work plan proposals reject injected approvals, require fresh input aft
   const prior = structuredClone(latestState(mock).phases)
   const patch = structuredClone(latestState(mock).plan)
   patch.phases[0].checks[0].required = false
+  patch.phases[0].evidenceRequired = ["src/a.mjs"]
   const proposal = await mock.tools.get("prewalk_checkpoint").execute("revised-plan", { action: "propose", kind: "plan", patch }, undefined, undefined, mock.ctx)
   assert.equal(proposal.details.ok, true)
   for (const input of [
@@ -706,6 +708,49 @@ test("mid-work plan proposals reject injected approvals, require fresh input aft
   assert.deepEqual(await mock.handlers.get("input")({ text: "この計画で進めて", source: "interactive" }, mock.ctx), { action: "handled" })
   assert.equal(latestState(mock).stage, "frontier_review")
   assert.equal(latestState(mock).revisionConfirmationPending, true)
+})
+
+test("real checkpoint result batches preserve plan approval and complete the Cheap handoff", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  const paths = ["src/a.mjs", "src/b.mjs", "src/c.mjs"]
+  mkdirSync(join(mock.ctx.cwd, "src"), { recursive: true })
+  for (const path of paths) writeFileSync(join(mock.ctx.cwd, path), "export const value = 1")
+  await mock.handlers.get("turn_end")({ messageEntryId: "inspect-expanded-diff", toolResultEntryIds: ["inspection"], message: { role: "assistant" } }, mock.ctx)
+  assert.equal(latestState(mock).stage, "frontier_review")
+  const count = latestState(mock).escalation_count
+  const patch = structuredClone(latestState(mock).plan)
+  patch.softPlan.expectedFiles = paths
+  async function checkpointBatch(id, params) {
+    assert.equal(mock.handlers.get("tool_call")({ toolCallId: id, toolName: "prewalk_checkpoint", input: params }, mock.ctx), undefined)
+    const result = await mock.tools.get("prewalk_checkpoint").execute(id, params, undefined, undefined, mock.ctx)
+    assert.equal(result.details.ok, true, result.details.reason)
+    mock.handlers.get("tool_result")({ toolCallId: id, toolName: "prewalk_checkpoint", isError: false }, mock.ctx)
+    await mock.handlers.get("turn_end")({ messageEntryId: `${id}-turn`, toolResultEntryIds: [`${id}-result`], message: { role: "assistant" } }, mock.ctx)
+    return result
+  }
+  await checkpointBatch("proposal-batch", { action: "propose", kind: "plan", patch })
+  assert.equal(latestState(mock).stage, "awaiting_human_approval")
+  assert.equal(latestState(mock).escalation_count, count)
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "frontier_review")
+  await checkpointBatch("confirmation-batch", { action: "verdict", verdict: "continue", phaseId: "phase-1" })
+  assert.equal(latestState(mock).stage, "cheap")
+  assert.equal(mock.pi.currentModel.id, "cheap")
+})
+
+test("status uses the current approved boundary rather than the initial plan snapshot", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  const proposal = await mock.tools.get("prewalk_checkpoint").execute("boundary", { action: "propose", kind: "hard", patch: { constraints: ["Preserve the current API"] } }, undefined, undefined, mock.ctx)
+  assert.equal(proposal.details.ok, true)
+  await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
+  await mock.commands.get("prewalk").handler("status", mock.ctx)
+  assert.match(mock.notices.at(-1).text, /Preserve the current API/)
 })
 
 test("NG keeps Prewalk active, asks once, restores the conversation, and requires a revised plan", async () => {

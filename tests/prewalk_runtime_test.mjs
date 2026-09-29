@@ -233,6 +233,11 @@ test("revisions preserve completed phases and refuse to alter already approved p
     await fx.runtime.turnEnd({ eventId: "cheap-phase-2" })
     assert.deepEqual(fx.runtime.state().completed, ["phase-1"])
     const old = fx.runtime.state()
+    const context = fx.runtime.reviewContext()
+    assert.equal(context.ok, true)
+    const contextPlan = JSON.parse(context.text.split("\n").find((line) => line.startsWith("Plan: ")).slice(6))
+    assert.deepEqual(contextPlan.phases, old.phases, "Frontier must see live TODO progress, not the initial proposal")
+    assert.match(context.text, /Completed phases: \["phase-1"\]/)
     await fx.runtime.checkpoint({ action: "request_revision", reason: "Change phase 2 check" })
     await fx.runtime.turnEnd({ eventId: "revise-phase-2" })
     const updated = structuredClone(old.plan)
@@ -329,6 +334,103 @@ test("normal phase validation and final approval remain required after a revisio
     assert.equal(fx.runtime.state().stage, "awaiting_final_approval")
     assert.equal((await fx.runtime.approve(passed.finalProposalId)).ok, true)
     assert.equal(fx.runtime.state().stage, "complete")
+  } finally { fx.cleanup() }
+})
+
+test("revision approval gates survive complete tool batches and Frontier observations do not cause a Cheap bounce", async () => {
+  const fx = fixture({ config: { toolChurnThreshold: 2, churnWindow: 2 } })
+  try {
+    await beginCheap(fx)
+    fx.setFiles({ "src/a.mjs": "a", "src/b.mjs": "b", "src/c.mjs": "c" })
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Update expected files" })
+    await fx.runtime.completeToolBatch({ eventId: "revision-request-batch" })
+    await fx.runtime.turnEnd({ eventId: "review-expanded-work" })
+    for (const id of ["review-read-1", "review-read-2"]) {
+      fx.runtime.observeToolCall({ id, name: "read", input: { path: "src/a.mjs" } })
+      fx.runtime.observeToolResult({ id, name: "read" })
+    }
+    await fx.runtime.completeToolBatch({ eventId: "frontier-inspection-batch" })
+    assert.equal(fx.runtime.state().stage, "frontier_review", "inspection must not schedule another Frontier visit")
+    const patch = structuredClone(fx.runtime.state().plan)
+    patch.softPlan.expectedFiles = ["src/a.mjs", "src/b.mjs", "src/c.mjs"]
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch })
+    assert.equal(proposed.ok, true, proposed.reason)
+    const count = fx.runtime.state().escalation_count
+    await fx.runtime.completeToolBatch({ eventId: "plan-proposal-result-batch" })
+    assert.equal(fx.runtime.state().stage, "awaiting_human_approval")
+    assert.equal(fx.runtime.state().escalation_count, count)
+    assert.equal((await fx.runtime.approve(proposed.proposalId)).ok, true)
+    await fx.runtime.checkpoint({ action: "verdict", verdict: "continue", phaseId: "phase-1" })
+    await fx.runtime.completeToolBatch({ eventId: "confirmation-result-batch" })
+    assert.equal(fx.runtime.state().stage, "cheap_pending")
+    await fx.runtime.turnEnd({ eventId: "confirmed-cheap-handoff" })
+    await fx.runtime.completeToolBatch({ eventId: "cheap-after-inspection" })
+    assert.equal(fx.runtime.state().stage, "cheap")
+  } finally { fx.cleanup() }
+})
+
+test("an external edit during an approval-gated tool batch stops instead of reopening routing", async () => {
+  const fx = fixture()
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Update checks" })
+    await fx.runtime.turnEnd({ eventId: "review-edit-gate" })
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root) })
+    assert.equal(proposed.ok, true)
+    fx.setFiles({ "src/a.mjs": "external-change" })
+    await fx.runtime.completeToolBatch({ eventId: "changed-during-approval" })
+    assert.equal(fx.runtime.state().stage, "stopped")
+    assert.equal(fx.runtime.state().stopReason, "worktree-changed-before-approval")
+    assert.equal((await fx.runtime.approve(proposed.proposalId)).ok, false)
+  } finally { fx.cleanup() }
+})
+
+test("a revision with only optional checks requires artifact evidence and can complete with it", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: true } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Make the sole check optional" })
+    await fx.runtime.turnEnd({ eventId: "optional-check-revision" })
+    const patch = plan(fx.root)
+    patch.phases[0].checks[0].required = false
+    const invalid = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch })
+    assert.equal(invalid.ok, false)
+    assert.match(invalid.reason, /required checks or concrete evidence/)
+    patch.phases[0].evidenceRequired = ["src/result.txt"]
+    const valid = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch })
+    assert.equal(valid.ok, true, valid.reason)
+    await fx.runtime.approve(valid.proposalId)
+    await fx.runtime.checkpoint({ action: "verdict", verdict: "continue", phaseId: "phase-1" })
+    await fx.runtime.turnEnd({ eventId: "optional-check-build" })
+    mkdirSync(join(fx.root, "src"), { recursive: true })
+    writeFileSync(join(fx.root, "src/result.txt"), "observed result")
+    fx.setFiles({ "src/result.txt": "result" })
+    await fx.runtime.completeToolBatch({ eventId: "observe-artifact-change" })
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }], evidence: ["src/result.txt"] })
+    await fx.runtime.completeToolBatch({ eventId: "optional-with-evidence" })
+    await fx.runtime.turnEnd({ eventId: "review-artifact" })
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    const reviewed = await fx.runtime.checkpoint({ action: "verdict", verdict: "pass", phaseId: "phase-1" })
+    assert.equal(reviewed.ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_final_approval")
+  } finally { fx.cleanup() }
+})
+
+test("a plan revision proposal reports failure when its approval-gate state cannot be persisted", async () => {
+  const fx = fixture({ deps: { appendEntry: (type, data) => {
+    if (type === "prewalk-state" && data.state.stage === "awaiting_human_approval" && data.state.proposals.at(-1)?.kind === "plan") {
+      throw new Error("proposal storage unavailable")
+    }
+  } } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Update checks" })
+    await fx.runtime.turnEnd({ eventId: "proposal-storage-review" })
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root) })
+    assert.equal(proposed.ok, false)
+    assert.match(proposed.reason, /persistence-failure/)
+    assert.equal(fx.runtime.state().stage, "stopped")
+    assert.equal(fx.runtime.observeToolCall({ id: "read-after-storage-failure", name: "read", input: { path: "README.md" } }), undefined)
   } finally { fx.cleanup() }
 })
 
@@ -573,6 +675,7 @@ test("plan validator rejects duplicate phases, invalid checks, missing evidence,
       { ...base, phases: [{ ...base.phases[0], todos: [] }] },
       { ...base, phases: [{ ...base.phases[0], checks: [{ id: "bad", command: "node", cwd: "../" }] }] },
       { ...base, phases: [{ ...base.phases[0], checks: [] }] },
+      { ...base, phases: [{ ...base.phases[0], checks: [{ ...base.phases[0].checks[0], required: false }] }] },
       { ...base, hardContract: { ...base.hardContract, allowedPaths: ["../outside"] } },
     ]
     for (let index = 0; index < variants.length; index++) {

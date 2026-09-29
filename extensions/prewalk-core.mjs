@@ -381,10 +381,14 @@ export function approveProposal(state, proposalId, baseRevision = state.sourceRe
 
 export function buildReviewContext({ state, diff = "", failures = [], budgetChars = state?.config?.contextBudgetChars ?? ROUTING_DEFAULTS.contextBudgetChars } = {}) {
   if (!state) return { ok: false, reason: "missing-state" }
+  const currentPlan = state.plan
+    ? { ...state.plan, hardContract: state.hardContract, softPlan: state.softPlan, phases: state.phases }
+    : { softPlan: state.softPlan, phases: state.phases }
   const mandatory = [
     `Goal: ${state.goal ?? ""}`,
     `Hard contract: ${JSON.stringify(state.hardContract ?? {})}`,
-    `Plan: ${JSON.stringify(state.plan ?? { softPlan: state.softPlan, phases: state.phases })}`,
+    `Plan: ${JSON.stringify(currentPlan)}`,
+    `Completed phases: ${JSON.stringify(state.completed ?? [])}`,
     `Current phase/step: ${state.currentPhaseId ?? "none"} / ${state.current_step ?? "none"}`,
     `Pending work: ${JSON.stringify(state.pending ?? [])}`,
     `Important decisions: ${JSON.stringify(state.important_decisions ?? [])}`,

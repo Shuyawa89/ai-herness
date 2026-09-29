@@ -101,7 +101,8 @@ function validatePlan(plan, workspace) {
       check.phaseId ??= phase.id
       check.required ??= true
     }
-    if (!(phase.checks ?? []).length && !(Array.isArray(phase.evidenceRequired) && phase.evidenceRequired.length)) return `phase ${phase.id} needs checks or concrete evidence requirements`
+    const requiredChecks = (phase.checks ?? []).filter((check) => typeof check === "string" || check.required !== false)
+    if (!requiredChecks.length && !(Array.isArray(phase.evidenceRequired) && phase.evidenceRequired.length)) return `phase ${phase.id} needs required checks or concrete evidence requirements`
     for (const artifact of phase.evidenceRequired ?? []) {
       if (typeof artifact !== "string") return `phase ${phase.id} evidence must be repository-relative file paths`
       try { if (normalizeRepoPath(artifact) !== artifact) return `invalid evidence path: ${artifact}` } catch { return `invalid evidence path: ${artifact}` }
@@ -475,8 +476,8 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
             delete task.revisionRequest
             task.stage = "awaiting_human_approval"
             task.role = "none"
-            await persist("plan-revision-proposed", { eventId: input.eventId, reason: "human-plan-revision-approval-required" })
-            return { ok: true, proposalId: proposal.proposal.id, requiresHuman: true }
+            const persisted = await persist("plan-revision-proposed", { eventId: input.eventId, reason: "human-plan-revision-approval-required" })
+            return persisted ? { ok: true, proposalId: proposal.proposal.id, requiresHuman: true } : { ok: false, reason: task.stopReason }
           }
           if (input.kind === "soft" && task.role !== "frontier") return { ok: false, reason: "soft-refinement-requires-frontier" }
           if (input.kind === "soft" && input.patch.expectedFiles !== undefined &&
@@ -532,6 +533,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
             const confirmingRevision = task.revisionConfirmationPending
             delete task.revisionConfirmationPending
             delete task.revisionRequest
+            task.recentSignatures = []
             const ok = await persist(confirmingRevision ? "plan-revision-confirmed" : "review-continue", { eventId: input.eventId, phaseId, reason: input.reason ?? "continue-within-approved-scope" })
             return { ok, phaseId }
           }
@@ -573,6 +575,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
             task.role = "cheap"
             delete task.revisionConfirmationPending
             delete task.revisionRequest
+            task.recentSignatures = []
             const key = `${phase.id}:${task.planRevision}:${task.sourceRevision}`
             task.reviewRecords[key] = { verdict: "repair", timestamp: now() }
             task.readyPhases = task.readyPhases.filter((item) => item !== key)
@@ -784,7 +787,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         }
         task.pendingTools[id] = { name, checkId }
       }
-      if (!["prewalk_checkpoint", "prewalk_validate"].includes(name)) {
+      if (task.stage === "cheap" && !["prewalk_checkpoint", "prewalk_validate"].includes(name)) {
         const signature = `${name}:${name === "bash" ? checkKey(input.command ?? "") : input.path ?? input.pattern ?? ""}`
         task.recentSignatures.push({ signature, revision: task.sourceRevision })
         task.recentSignatures = task.recentSignatures.slice(-limits.churnWindow)
@@ -884,14 +887,21 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         task.snapshot = { ...current }
         task.sourceRevision = fingerprintSnapshot(current)
         task.changed_files = [...new Set([...task.changed_files, ...changed])].sort()
-        const outside = changed.find((path) => task.hardContract && !isPathAllowed(path, task.hardContract.allowedPaths ?? [], task.hardContract.protectedPaths ?? []))
-        if (outside) {
-          await routeToFrontier("deviation", { eventId, toolIds: observedIds, tools })
-        } else if (task.softPlan?.expectedFiles?.length && changed.length > task.softPlan.expectedFiles.length * limits.scopeExpansionFactor) {
-          await routeToFrontier("scope-expansion", { eventId, toolIds: observedIds, tools })
-        } else {
-          const repeated = task.recentSignatures.length >= limits.toolChurnThreshold && task.recentSignatures.slice(-limits.toolChurnThreshold).every((item) => item.signature === task.recentSignatures.at(-1)?.signature)
-          if (repeated) await routeToFrontier("churn", { eventId, toolIds: observedIds, tools })
+        if (["awaiting_approval", "awaiting_human_approval", "awaiting_final_approval"].includes(task.stage) &&
+          task.proposals.some((proposal) => proposal.status === "pending" && proposal.baseRevision !== task.sourceRevision)) {
+          return stop("worktree-changed-before-approval", { eventId, toolIds: observedIds, tools })
+        }
+        // Frontier already owns the review; automatic triggers must not overwrite human gates or a Cheap handoff.
+        if (task.stage === "cheap") {
+          const outside = changed.find((path) => task.hardContract && !isPathAllowed(path, task.hardContract.allowedPaths ?? [], task.hardContract.protectedPaths ?? []))
+          if (outside) {
+            await routeToFrontier("deviation", { eventId, toolIds: observedIds, tools })
+          } else if (task.softPlan?.expectedFiles?.length && changed.length > task.softPlan.expectedFiles.length * limits.scopeExpansionFactor) {
+            await routeToFrontier("scope-expansion", { eventId, toolIds: observedIds, tools })
+          } else {
+            const repeated = task.recentSignatures.length >= limits.toolChurnThreshold && task.recentSignatures.slice(-limits.toolChurnThreshold).every((item) => item.signature === task.recentSignatures.at(-1)?.signature)
+            if (repeated) await routeToFrontier("churn", { eventId, toolIds: observedIds, tools })
+          }
         }
         if (isTerminalStage(task.stage)) return { reason: "run-terminal", changedFiles: task.changed_files }
         const phase = currentPhase()
