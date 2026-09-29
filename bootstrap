@@ -408,6 +408,7 @@ SKILL_ALLOWLIST=(
   harness-workflow
   understand
   design-check
+  consulting-pptx-skill
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand
