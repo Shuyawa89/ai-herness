@@ -103,6 +103,30 @@ test("proposal approval binds exact proposal and revision; hard changes need hum
   assert.equal(core.approveProposal(approved.state, proposal.proposal.id, "rev-1").ok, false)
 })
 
+test("plan revisions reset changed TODOs and remove obsolete validation evidence", () => {
+  const original = state({
+    completed: [], phaseEvidence: {}, readyPhases: [],
+    phases: [{ id: "phase-1", todos: [
+      { id: "same", text: "Keep implemented work", status: "ready" },
+      { id: "changed", text: "Old requirement", status: "ready" },
+    ], checks: ["test-1"] }],
+  })
+  const revised = {
+    hardContract: original.hardContract, softPlan: original.softPlan,
+    phases: [{ id: "phase-1", todos: [
+      { id: "same", text: "Keep implemented work", status: "pending" },
+      { id: "changed", text: "New requirement", status: "ready" },
+      { id: "new", text: "Unimplemented work", status: "completed" },
+    ], checks: ["test-2"] }],
+  }
+  const proposed = core.createProposal(original, { kind: "plan", patch: revised })
+  const approved = core.approveProposal(proposed.state, proposed.proposal.id)
+  assert.equal(approved.ok, true)
+  assert.deepEqual(approved.state.phases[0].todos.map((todo) => todo.status), ["ready", "pending", "pending"])
+  assert.equal(approved.state.validation_results["test-1"], undefined)
+  assert.equal(original.validation_results["test-1"].status, "passed", "input state remains immutable")
+})
+
 test("review context preserves mandatory contract and truncates optional evidence only", () => {
   assert.equal(typeof core.buildReviewContext, "function")
   const full = core.buildReviewContext({ state: state(), diff: "x".repeat(500), failures: ["failure"], budgetChars: 1000 })

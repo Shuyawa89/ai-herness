@@ -241,7 +241,7 @@ test("an oversized structured review prompt stops before queuing a Frontier turn
 
 test("interactive affirmative input approves only the previewed initial proposal", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
-  for (const phrase of ["承認", "OK", "いいよ", "進めて", "この計画で進めて"]) {
+  for (const phrase of ["承認", "OK", "ok", "いいよ", "進めて", "この計画で進めて"]) {
     const mock = setup()
     mock.ctx.mode = "tui"; mock.ctx.hasUI = true
     extension(mock.pi)
@@ -610,6 +610,104 @@ test("off and reload leave ordinary tools, plan files, and turns untouched", asy
   }
 })
 
+test("a stopped run also leaves ordinary Pi events inert after checkpoint cancellation", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterPlanProposal(mock)
+  const cancelled = await mock.tools.get("prewalk_checkpoint").execute("cancel", { action: "cancel" }, undefined, undefined, mock.ctx)
+  assert.equal(cancelled.details.ok, undefined)
+  const stopped = latestState(mock)
+  assert.equal(stopped.stage, "stopped")
+  const entries = mock.appended.length
+  for (const toolName of ["read", "bash", "edit", "write", "third-party"]) {
+    assert.equal(mock.handlers.get("tool_call")({ toolCallId: `stopped-${toolName}`, toolName, input: { path: "unrelated/file", command: "pwd" } }, mock.ctx), undefined)
+  }
+  assert.equal(await mock.handlers.get("context")({ messages: [] }, mock.ctx), undefined)
+  await mock.handlers.get("model_select")({ model: { provider: "mock", id: "cheap" }, source: "cycle" }, mock.ctx)
+  await mock.handlers.get("turn_start")({}, mock.ctx)
+  assert.equal(mock.appended.length, entries)
+  assert.deepEqual(latestState(mock), stopped)
+})
+
+test("a mid-work revision shows changed checks and resumes Cheap only after human approval and Frontier confirmation", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  const continueReview = await mock.tools.get("prewalk_checkpoint").execute("continue", { action: "verdict", phaseId: "phase-1", verdict: "continue" }, undefined, undefined, mock.ctx)
+  assert.equal(continueReview.details.ok, true)
+  await mock.handlers.get("turn_end")({ messageEntryId: "cheap-again", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
+  assert.equal(latestState(mock).stage, "cheap")
+  const requested = await mock.tools.get("prewalk_checkpoint").execute("request", { action: "request_revision", reason: "Change the required check" }, undefined, undefined, mock.ctx)
+  assert.equal(requested.details.ok, true)
+  await mock.handlers.get("turn_end")({ messageEntryId: "revision-review", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
+  assert.equal(latestState(mock).stage, "frontier_review")
+  const current = latestState(mock)
+  const newPlan = structuredClone(current.plan)
+  newPlan.phases[0].checks[0].args = ["-e", "process.exit(1)"]
+  newPlan.phases[0].checks[0].required = false
+  const revised = await mock.tools.get("prewalk_checkpoint").execute("proposal", { action: "propose", kind: "plan", patch: newPlan }, undefined, undefined, mock.ctx)
+  assert.equal(revised.details.ok, true)
+  assert.match(mock.notices.at(-1).text, /process\.exit\(0\)/)
+  assert.match(mock.notices.at(-1).text, /process\.exit\(1\)/)
+  assert.match(mock.notices.at(-1).text, /required: true/)
+  assert.match(mock.notices.at(-1).text, /required: false/)
+  assert.ok(mock.notices.at(-1).text.includes(`cwd: ${mock.ctx.cwd}`))
+  assert.equal(latestState(mock).phases[0].checks[0].args.at(-1), "process.exit(0)")
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "frontier_review")
+  assert.equal(latestState(mock).phases[0].checks[0].args.at(-1), "process.exit(1)")
+  assert.match(readFileSync(join(mock.ctx.cwd, ".temp-local/workflow-plan.md"), "utf8"), /required: false/)
+  const confirmationPrompt = { prompt: "Continue", systemPromptOptions: { appendSystemPrompt: "" } }
+  await mock.handlers.get("before_agent_start")(confirmationPrompt, mock.ctx)
+  assert.match(confirmationPrompt.systemPromptOptions.appendSystemPrompt, /This revised plan already has direct human approval/)
+  const confirm = await mock.tools.get("prewalk_checkpoint").execute("confirm", { action: "verdict", phaseId: "phase-1", verdict: "continue" }, undefined, undefined, mock.ctx)
+  assert.equal(confirm.details.ok, true)
+  await mock.handlers.get("turn_end")({ messageEntryId: "revised-cheap", toolResultEntryIds: [], message: { role: "assistant" } }, mock.ctx)
+  assert.equal(latestState(mock).stage, "cheap")
+  assert.equal(latestState(mock).runId, current.runId)
+})
+
+test("mid-work plan proposals reject injected approvals, require fresh input after reload, and preserve the plan on NG", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  extension(mock.pi)
+  await enterFrontierReview(mock)
+  const prior = structuredClone(latestState(mock).phases)
+  const patch = structuredClone(latestState(mock).plan)
+  patch.phases[0].checks[0].required = false
+  const proposal = await mock.tools.get("prewalk_checkpoint").execute("revised-plan", { action: "propose", kind: "plan", patch }, undefined, undefined, mock.ctx)
+  assert.equal(proposal.details.ok, true)
+  for (const input of [
+    { text: "OK", source: "extension" },
+    { text: "OK", source: "interactive", images: [{}] },
+  ]) {
+    assert.deepEqual(await mock.handlers.get("input")(input, mock.ctx), { action: "continue" })
+    assert.deepEqual(latestState(mock).phases, prior)
+    assert.equal(latestState(mock).stage, "awaiting_human_approval")
+  }
+  assert.deepEqual(await mock.handlers.get("input")({ text: "OK if you skip all tests", source: "interactive" }, mock.ctx), { action: "continue" })
+  assert.equal(latestState(mock).stage, "frontier_review", "conditional approval is revision feedback, not authority")
+  assert.deepEqual(latestState(mock).phases, prior)
+  assert.equal((await mock.tools.get("prewalk_checkpoint").execute("fresh-proposal", { action: "propose", kind: "plan", patch }, undefined, undefined, mock.ctx)).details.ok, true)
+  await mock.handlers.get("session_start")({ reason: "reload" }, mock.ctx)
+  assert.equal(latestState(mock).stage, "awaiting_human_approval")
+  assert.equal(mock.pi.currentModel.id, "frontier")
+  assert.deepEqual(await mock.handlers.get("input")({ text: "NG", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.deepEqual(latestState(mock).phases, prior)
+  assert.equal(latestState(mock).stopReason, null)
+  assert.deepEqual(await mock.handlers.get("input")({ text: "Keep that check required", source: "interactive" }, mock.ctx), { action: "continue" })
+  assert.equal(latestState(mock).stage, "frontier_review")
+  const replacement = await mock.tools.get("prewalk_checkpoint").execute("replacement", { action: "propose", kind: "plan", patch: { ...patch, phases: prior } }, undefined, undefined, mock.ctx)
+  assert.equal(replacement.details.ok, true)
+  assert.notEqual(replacement.details.proposalId, proposal.details.proposalId)
+  assert.deepEqual(await mock.handlers.get("input")({ text: "この計画で進めて", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "frontier_review")
+  assert.equal(latestState(mock).revisionConfirmationPending, true)
+})
+
 test("NG keeps Prewalk active, asks once, restores the conversation, and requires a revised plan", async () => {
   const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
   const mock = setup()
@@ -640,6 +738,18 @@ test("NG keeps Prewalk active, asks once, restores the conversation, and require
   assert.equal(revised.details.ok, true)
   await mock.handlers.get("input")({ text: "OK", source: "interactive" }, mock.ctx)
   assert.equal(latestState(mock).initialApproval.proposalId, revised.details.proposalId)
+})
+
+test("却下 rejects the displayed proposal without ending Prewalk", async () => {
+  const { default: extension } = await jiti.import(pathToFileURL(resolve(root, "extensions/pi-prewalk.ts")).href)
+  const mock = setup()
+  mock.ctx.mode = "tui"; mock.ctx.hasUI = true
+  extension(mock.pi)
+  const { proposal } = await enterPlanProposal(mock, "機能を実装して")
+  assert.deepEqual(await mock.handlers.get("input")({ text: "却下", source: "interactive" }, mock.ctx), { action: "handled" })
+  assert.equal(latestState(mock).stage, "awaiting_revision")
+  assert.equal(latestState(mock).proposals.find((item) => item.id === proposal.details.proposalId).status, "rejected")
+  assert.equal(latestState(mock).stopReason, null)
 })
 
 test("NG with feedback revises without asking again, and injected or conditional answers never approve", async () => {

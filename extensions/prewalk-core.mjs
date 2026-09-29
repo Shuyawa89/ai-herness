@@ -248,7 +248,7 @@ export function decideRoute(state, event, config = state.config ?? ROUTING_DEFAU
   }
   const needsNewVisit = (event.type === "phase-ready" && (limits.milestoneReview || (event.final && limits.finalReview))) ||
     (event.type === "validation-failed" && event.recognized === true && event.streak >= limits.failureThreshold) ||
-    ["deviation", "churn", "scope-expansion"].includes(event.type) ||
+    ["deviation", "churn", "scope-expansion", "plan-revision"].includes(event.type) ||
     (event.type === "finish-requested" && limits.finalReview)
   if (needsNewVisit && state.escalation_count >= limits.maxEscalations) return { action: "stop", reason: "limit-reached" }
   if (event.type === "phase-ready") {
@@ -259,7 +259,7 @@ export function decideRoute(state, event, config = state.config ?? ROUTING_DEFAU
     if (event.recognized !== true) return { action: "continue", reason: "unknown-validation" }
     return event.streak >= limits.failureThreshold ? { action: "review", reason: "validation-threshold", checkId: event.checkId } : { action: "continue", reason: "validation-repair" }
   }
-  if (["deviation", "churn", "scope-expansion"].includes(event.type)) return { action: "review", reason: event.type }
+  if (["deviation", "churn", "scope-expansion", "plan-revision"].includes(event.type)) return { action: "review", reason: event.type }
   if (event.type === "finish-requested") return limits.finalReview ? { action: "review", reason: "final-review", includeFinal: true } : { action: "human-approval", reason: "final-review-disabled" }
   if (event.type === "frontier-pass") return { action: event.includeFinal ? "human-approval" : "cheap", reason: "frontier-pass" }
   if (event.type === "frontier-repair") return { action: "cheap", reason: "frontier-repair" }
@@ -296,7 +296,7 @@ export function reduceTaskState(state, event, config = state.config ?? ROUTING_D
 }
 
 export function createProposal(state, { kind, patch, baseRevision = state.sourceRevision, id }) {
-  if (!(["hard", "soft", "initial", "final", "decision"].includes(kind))) throw new Error("Unknown proposal kind")
+  if (!(["hard", "soft", "initial", "final", "decision", "plan"].includes(kind))) throw new Error("Unknown proposal kind")
   const proposal = {
     id: id ?? `proposal-${state.proposals.length + 1}-${String(baseRevision).slice(0, 12)}`,
     kind,
@@ -333,6 +333,46 @@ export function approveProposal(state, proposalId, baseRevision = state.sourceRe
     next.currentPhaseId = next.phases[0]?.id ?? null
     next.initialApproval = { proposalId, baseRevision }
     next.stage = "frontier_initial"
+  } else if (target.kind === "plan") {
+    const revised = structuredClone(target.patch)
+    if (JSON.stringify(revised.hardContract) !== JSON.stringify(next.hardContract)) next.hardRevision += 1
+    next.hardContract = revised.hardContract
+    next.softPlan = revised.softPlan
+    next.phases = revised.phases.map((phase) => {
+      const previous = next.phases.find((item) => item.id === phase.id)
+      if (next.completed.includes(phase.id)) return phase
+      return { ...phase, todos: phase.todos.map((todo) => {
+        const old = previous?.todos.find((item) => item.id === todo.id)
+        const { status: _newStatus, ...definition } = todo
+        const { status: _oldStatus, ...oldDefinition } = old ?? {}
+        return { ...todo, status: old && JSON.stringify(definition) === JSON.stringify(oldDefinition) ? old.status : "pending" }
+      }) }
+    })
+    const retainedChecks = new Set(next.phases.flatMap((phase) => (phase.checks ?? []).map((check) => typeof check === "string" ? check : check.id)))
+    for (const id of Object.keys(next.validation_results)) {
+      if (!retainedChecks.has(id)) {
+        delete next.validation_results[id]
+        delete next.failureStreaks[id]
+      }
+    }
+    for (const phase of next.phases) {
+      if (next.completed.includes(phase.id)) continue
+      const prior = state.phases.find((item) => item.id === phase.id)
+      for (const check of phase.checks ?? []) {
+        const id = typeof check === "string" ? check : check.id
+        const old = prior?.checks?.find((item) => (typeof item === "string" ? item : item.id) === id)
+        if (JSON.stringify(old) !== JSON.stringify(check)) {
+          delete next.validation_results[id]
+          delete next.failureStreaks[id]
+        }
+      }
+      if (JSON.stringify(prior?.evidenceRequired) !== JSON.stringify(phase.evidenceRequired)) delete next.phaseEvidence[phase.id]
+    }
+    next.plan = { ...revised, phases: structuredClone(next.phases) }
+    next.planRevision += 1
+    next.readyPhases = []
+    next.reviewIncludesFinal = false
+    next.revisionConfirmationPending = true
   } else if (target.kind === "final") {
     next.stage = "complete"
   }

@@ -16,6 +16,14 @@ const CONFIG_KEYS: Record<string, string> = {
   milestone_review: "milestoneReview", final_review: "finalReview", context_budget_chars: "contextBudgetChars",
   output_limit_chars: "outputLimitChars", command_timeout_ms: "commandTimeoutMs", scope_expansion_factor: "scopeExpansionFactor",
 }
+const COMMON_APPROVALS = new Set(["承認", "ok", "いいよ"])
+const PROPOSAL_APPROVALS: Record<string, Set<string>> = {
+  initial: new Set(["進めて", "この計画で進めて"]),
+  hard: new Set(["この変更で進めて"]),
+  plan: new Set(["この計画で進めて"]),
+  final: new Set(["完了を承認"]),
+}
+const SHORT_ANSWERS = new Set(["ng", "却下", ...COMMON_APPROVALS, ...Object.values(PROPOSAL_APPROVALS).flatMap((replies) => [...replies])])
 
 function getConfigSettings(settings: unknown) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("Local Prewalk config must be a JSON object")
@@ -84,6 +92,9 @@ function contractSummary(state: any, contract: any) {
   list(label(state, "Protected paths", "保護するパス"), contract.protectedPaths ?? [])
   return lines
 }
+function checkSummary(check: any) {
+  return typeof check === "string" ? check : `${check.id}: ${[check.command, ...(check.args ?? [])].join(" ")} (required: ${check.required !== false}, cwd: ${check.cwd ?? "."})`
+}
 function planSummary(state: any, plan: any) {
   const lines = contractSummary(state, plan.hardContract ?? {})
   lines.push(`${label(state, "Expected files", "想定ファイル")}: ${(plan.softPlan?.expectedFiles ?? []).join(", ") || label(state, "none", "なし")}`)
@@ -91,15 +102,17 @@ function planSummary(state: any, plan: any) {
   for (const phase of plan.phases ?? []) {
     lines.push(`  ${phase.id}: ${(phase.todos ?? []).map((todo: any) => todo.text ?? todo.title ?? todo.id).join("; ")}`)
     for (const check of phase.checks ?? []) {
-      lines.push(`    ${label(state, "Check", "検証")}: ${typeof check === "string" ? check : [check.command, ...(check.args ?? [])].join(" ")}`)
+      lines.push(`    ${label(state, "Check", "検証")}: ${checkSummary(check)}`)
     }
     for (const file of phase.evidenceRequired ?? []) lines.push(`    ${label(state, "Evidence", "確認する成果物")}: ${file}`)
   }
   return lines
 }
 function approvalText(state: any, proposal: any) {
-  const kind = { initial: label(state, "initial plan", "初回計画"), hard: label(state, "scope change", "作業範囲の変更"), final: label(state, "task completion", "最終完了"), decision: label(state, "human decision", "人間の判断が必要な質問") }[proposal.kind as "initial" | "hard" | "final" | "decision"] ?? proposal.kind
-  const detail = proposal.kind === "hard"
+  const kind = { initial: label(state, "initial plan", "初回計画"), plan: label(state, "plan revision", "作業途中の計画改訂"), hard: label(state, "scope change", "作業範囲の変更"), final: label(state, "task completion", "最終完了"), decision: label(state, "human decision", "人間の判断が必要な質問") }[proposal.kind as "initial" | "plan" | "hard" | "final" | "decision"] ?? proposal.kind
+  const detail = proposal.kind === "plan"
+    ? `${label(state, "Current approved plan", "現在の承認済み計画")}:\n${planSummary(state, { ...state.plan, hardContract: state.hardContract, softPlan: state.softPlan, phases: state.phases }).join("\n")}\n${label(state, "Proposed plan", "改訂後の計画")} — ${label(state, "Compare scope, checks, and remaining phases before approving", "承認前に作業範囲・検証条件・残りのフェーズを比較してください")}:\n${planSummary(state, proposal.patch).join("\n")}`
+    : proposal.kind === "hard"
     ? `${label(state, "Current boundary", "現在の作業範囲")}:\n${contractSummary(state, state.hardContract).join("\n")}\n${label(state, "Boundary after change", "変更後の作業範囲")}:\n${contractSummary(state, { ...state.hardContract, ...proposal.patch }).join("\n")}`
     : proposal.kind === "final"
       ? `${label(state, "Goal", "目的")}: ${state.goal}\n${label(state, "Changed files", "変更ファイル")}: ${display(state.changed_files)}\n${label(state, "Completed phases", "完了したフェーズ")}: ${display(state.completed)}\n${label(state, "Validation results", "検証結果")}: ${display(state.validation_results)}\n${label(state, "Pending work", "未完了の作業")}: ${display(state.pending)}`
@@ -126,7 +139,7 @@ function statusLine(ctx: ExtensionContext, state: any, armed: { frontierModel: s
   })
   const waiting = state?.stage === "awaiting_approval" ? "plan"
     : state?.stage === "awaiting_final_approval" ? "final"
-      : state?.stage === "awaiting_human_approval" ? "scope" : undefined
+      : state?.stage === "awaiting_human_approval" ? pendingProposal(state)?.kind === "plan" ? "plan revision" : "scope" : undefined
   const special = state?.stage === "awaiting_revision" ? "Awaiting feedback"
     : pendingProposal(state)?.kind === "decision" ? "Awaiting decision"
     : waiting ? `Awaiting approval (${waiting})`
@@ -157,7 +170,7 @@ function writePlanView(ctx: ExtensionContext, state: any) {
   for (const phase of state.phases ?? []) {
     lines.push(`### ${phase.id}`, "")
     for (const todo of phase.todos ?? []) lines.push(`- [${["ready", "completed"].includes(todo.status) ? "x" : " "}] ${todo.id}: ${todo.text ?? todo.title ?? todo.description ?? todo.id} (${todo.status})`)
-    for (const check of phase.checks ?? []) lines.push(`- ${label(state, "Check", "検証")}: ${typeof check === "string" ? check : [check.command, ...(check.args ?? [])].join(" ")}`)
+    for (const check of phase.checks ?? []) lines.push(`- ${label(state, "Check", "検証")}: ${checkSummary(check)}`)
     for (const file of phase.evidenceRequired ?? []) lines.push(`- ${label(state, "Evidence", "確認する成果物")}: ${file}`)
     lines.push("")
   }
@@ -248,8 +261,12 @@ export default function (pi: ExtensionAPI) {
   function conversationGuidance(state: any) {
     const language = `Write human-facing plans, revisions, and questions in ${planLanguage(state) === "ja" ? "Japanese" : "English"}; keep paths, IDs, and commands unchanged.`
     const revision = state.revisionRequest
-      ? ` The user did not approve the previous ${state.revisionRequest.kind} proposal. Revision feedback: ${JSON.stringify(state.revisionRequest.feedback)}. Address this feedback; do not implement or finalize the rejected proposal. A changed boundary or completion needs a newly displayed proposal and direct human approval. If no feedback was given, ask what to change and wait.` : ""
-    return `${language}${revision} Only direct human input can approve a displayed proposal; model output cannot approve it.`
+      ? state.revisionRequest.kind === "plan" && !state.revisionRequest.proposalId
+        ? ` The user requests a mid-work plan revision: ${JSON.stringify(state.revisionRequest.feedback)}. Inspect the current state and submit a full plan proposal (kind plan) for human approval before applying changed checks or scope; do not mark the phase complete.`
+        : ` The user did not approve the previous ${state.revisionRequest.kind} proposal. Revision feedback: ${JSON.stringify(state.revisionRequest.feedback)}. Address this feedback; do not implement or finalize the rejected proposal. A changed boundary or completion needs a newly displayed proposal and direct human approval. If no feedback was given, ask what to change and wait.` : ""
+    const confirmation = state.revisionConfirmationPending
+      ? " This revised plan already has direct human approval. Confirm the accepted revision with verdict continue to resume Cheap; do not request another approval or use a phase-completion pass. Return repair work to Cheap if needed." : ""
+    return `${language}${revision}${confirmation} Only direct human input can approve a displayed proposal; model output cannot approve it.`
   }
 
   function routingPrompt(message: any) {
@@ -257,7 +274,7 @@ export default function (pi: ExtensionAPI) {
     if (state.role === "frontier") {
       const evidence = runtime.reviewContext({ diff: latestCtx ? reviewEvidence(latestCtx) : "Diff unavailable" })
       if (!evidence.ok) return undefined
-      return `PREWALK FRONTIER REVIEW\nReview phase(s): ${(state.reviewPhaseIds ?? []).join(", ") || "final/task"}. Review the actual diff and validation evidence before calling prewalk_checkpoint with a pass, repair, or needs-human verdict. Human approval cannot be issued by a model. ${conversationGuidance(state)}\n${evidence.text}`
+      return `PREWALK FRONTIER REVIEW\nReview phase(s): ${(state.reviewPhaseIds ?? []).join(", ") || "final/task"}. Review the actual diff and validation evidence. When a plan revision is requested, propose the complete revised plan for human approval; after approval, confirm it with verdict continue independently of phase completion. Otherwise submit a pass, repair, continue, or needs-human verdict. Human approval cannot be issued by a model. ${conversationGuidance(state)}\n${evidence.text}`
     }
     return `PREWALK CHEAP CONTINUATION\nContinue phase ${state.currentPhaseId ?? "current"} inside the approved hard contract. Repair pending work if applicable; do not broaden scope without a proposal.`
   }
@@ -285,7 +302,7 @@ export default function (pi: ExtensionAPI) {
   }, { additionalProperties: false })
   pi.registerTool({
     name: "prewalk_checkpoint", label: "Prewalk checkpoint",
-    description: "Submit an initial plan or revise the pending initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report TODO progress and optional verified artifact paths via evidence; propose a refinement; or submit a Frontier verdict. A revised initial plan supersedes the prior pending proposal. Only direct human input can approve the displayed proposal. Replying NG requests revision without ending Prewalk.",
+    description: "Submit or revise an initial plan {hardContract:{outcome,constraints,allowedPaths,protectedPaths},softPlan:{expectedFiles},phases:[{id,todos:[{id,text,status}],checks:[{id,command,args,cwd,required}],evidenceRequired:[repoRelativeFilePath]}]}; report progress; Cheap can request_revision with a reason; Frontier can propose kind plan with a complete revised plan as patch for direct human approval and then confirm it with verdict continue independently of phase completion. Propose other refinements or verdicts as needed. Only direct human input can approve the displayed proposal.",
     parameters: checkpointSchema, executionMode: "sequential",
     async execute(_id, params, _signal, _update, ctx) {
       const owner = runtime
@@ -378,15 +395,16 @@ export default function (pi: ExtensionAPI) {
           : state.stage === "frontier_initial"
             ? "The plan is approved. Make one successful representative source edit inside its hard contract, then stop; Prewalk will hand off to Cheap."
           : state.stage === "frontier_review"
-            ? "Review the current diff, plan, pending work, and actual fresh validation evidence. Submit pass, repair, or needs-human via prewalk_checkpoint; do not approve proposals yourself."
+            ? "Review the current diff, plan, pending work, and actual fresh validation evidence. For a requested plan revision, propose kind plan with a complete updated plan and wait for human approval; after approval confirm with verdict continue independently of phase completion. Otherwise submit pass, repair, continue, or needs-human; do not approve proposals yourself."
             : state.role === "cheap"
-              ? "Implement only inside the approved hard contract. Update current-phase TODOs with prewalk_checkpoint progress and report readiness only when required checks/evidence are fresh."
+              ? "Implement only inside the approved hard contract. For a mid-work plan change, use prewalk_checkpoint request_revision with a reason; do not change checks through progress or edit the plan view as authority. Update current-phase TODOs with prewalk_checkpoint progress and report readiness only when required checks/evidence are fresh."
               : "Preserve the approved task boundary and use prewalk_checkpoint for permitted state transitions."
       event.systemPromptOptions.appendSystemPrompt = (event.systemPromptOptions.appendSystemPrompt ?? "") + `\n\nPREWALK STATE\nRole: ${state.role}; stage: ${state.stage}. ${stageGuidance} ${conversationGuidance(state)}`
     }
   })
 
   pi.on("tool_call", (event) => {
+    if (isTerminal(snapshotState())) return
     const result = runtime.observeToolCall({ id: event.toolCallId, name: event.toolName, input: event.input })
     if (result?.block) return { block: true, reason: result.reason }
   })
@@ -481,7 +499,7 @@ export default function (pi: ExtensionAPI) {
     if (state.sessionId !== ctx.sessionManager.getSessionId() || state.workspace !== resolve(ctx.cwd)) return { action: "continue" }
     const answer = event.text.trim().toLocaleLowerCase("en")
     const rejection = /^(?:ng|却下)(?:$|[\s、,:：]\s*(.*))$/is.exec(event.text.trim())
-    const shortAnswer = ["ok", "承認", "いいよ", "進めて", "この計画で進めて", "この変更で進めて", "完了を承認", "ng", "却下"].includes(answer)
+    const shortAnswer = SHORT_ANSWERS.has(answer)
     if (state.stage === "paused") {
       if (!await recoverPaused(ctx)) return { action: "handled" }
       state = snapshotState()
@@ -502,13 +520,9 @@ export default function (pi: ExtensionAPI) {
     }
     const proposal = pendingProposal(state)
     if (!proposal) return { action: "continue" }
-    const common = ["承認", "ok", "いいよ"]
-    const extra = proposal.kind === "initial" ? ["進めて", "この計画で進めて"]
-      : proposal.kind === "hard" ? ["この変更で進めて"]
-        : proposal.kind === "final" ? ["完了を承認"] : []
-    const affirmative = [...common, ...extra].includes(answer)
-    // Initial revisions already have a checkpoint path. Scope/final feedback must reopen review.
-    const revisionFeedback = !affirmative && !shortAnswer && event.text.trim() && ["hard", "final"].includes(proposal.kind)
+    const affirmative = COMMON_APPROVALS.has(answer) || (PROPOSAL_APPROVALS[proposal.kind]?.has(answer) ?? false)
+    // Initial revisions already have a checkpoint path. Later proposal feedback must reopen review.
+    const revisionFeedback = !affirmative && !shortAnswer && event.text.trim() && ["hard", "plan", "final"].includes(proposal.kind)
     const decisionAnswer = proposal.kind === "decision" && !shortAnswer && !rejection && event.text.trim()
     if (!affirmative && !rejection && !revisionFeedback && !decisionAnswer) return { action: "continue" }
     if (proposal.kind === "decision" && !decisionAnswer) {

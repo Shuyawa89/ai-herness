@@ -220,6 +220,13 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
     sourceRevision: task?.sourceRevision,
     ...detail,
   })
+  function setStoppedState(reason) {
+    task.stage = "stopped"
+    task.role = "none"
+    task.stopReason = reason
+    task.pendingTools = {}
+    completedTools = []
+  }
   async function persist(type, detail = {}) {
     try {
       task.stateRevision = (Number.isSafeInteger(task.stateRevision) ? task.stateRevision : 0) + 1
@@ -228,11 +235,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
       return true
     } catch (error) {
       if (!isTerminalStage(task.stage)) {
-        task.stage = "stopped"
-        task.stopReason = `persistence-failure: ${error instanceof Error ? error.message : String(error)}`
-        task.role = "none"
-        task.pendingTools = {}
-        completedTools = []
+        setStoppedState(`persistence-failure: ${error instanceof Error ? error.message : String(error)}`)
       }
       try {
         task.stateRevision += 1
@@ -245,11 +248,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
   function stop(reason, detail = {}) {
     if (!task) return Promise.resolve({ action: "stopped", reason })
     if (isTerminalStage(task.stage)) return Promise.resolve({ action: task.stage === "stopped" ? "stopped" : "none", reason: task.stopReason })
-    task.stage = "stopped"
-    task.role = "none"
-    task.stopReason = reason
-    task.pendingTools = {}
-    completedTools = []
+    setStoppedState(reason)
     return persist("stopped", { reason, ...detail }).then(() => ({ action: "stopped", reason }))
   }
   function rememberDecision(reason, detail = {}) {
@@ -281,11 +280,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
   function currentPhase() { return task?.phases.find((phase) => phase.id === task.currentPhaseId) }
   function markStopSync(reason) {
     if (!task || isTerminalStage(task.stage)) return
-    task.stage = "stopped"
-    task.role = "none"
-    task.stopReason = reason
-    task.pendingTools = {}
-    completedTools = []
+    setStoppedState(reason)
     void persist("stopped", { reason })
   }
   function stopForLimits(eventId) {
@@ -323,7 +318,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
 
   return {
     configure(nextConfig) {
-      if (task && !["complete", "stopped"].includes(task.stage)) throw new Error("cannot reconfigure an active Prewalk run")
+      if (task && !isTerminalStage(task.stage)) throw new Error("cannot reconfigure an active Prewalk run")
       limits = resolveRoutingConfig(nextConfig)
     },
     state() { return task ? safeClone(task) : undefined },
@@ -336,7 +331,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
     },
     status() {
       if (!task) return { active: false, stage: "idle" }
-      return { active: !["complete", "stopped"].includes(task.stage), stage: task.stage, role: task.role, runId: task.runId, currentPhaseId: task.currentPhaseId, counters: { failure: task.failure_count, escalation: task.escalation_count, retry: task.retry_count, step: task.step_count }, stopReason: task.stopReason, budgetShortfall: task.budgetShortfall }
+      return { active: !isTerminalStage(task.stage), stage: task.stage, role: task.role, runId: task.runId, currentPhaseId: task.currentPhaseId, counters: { failure: task.failure_count, escalation: task.escalation_count, retry: task.retry_count, step: task.step_count }, stopReason: task.stopReason, budgetShortfall: task.budgetShortfall }
     },
     start({ runId, sessionId, workspace = deps.cwd ?? process.cwd(), goal, frontierModel, cheapModel, displayLanguage = "en", baseline } = {}) {
       const intent = ++startIntent
@@ -379,7 +374,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         task = safeClone(saved)
         completedTools = []
         limits = resolveRoutingConfig(saved.config)
-        if (["stopped", "complete"].includes(task.stage)) return { ok: true, terminal: true, state: safeClone(task) }
+        if (isTerminalStage(task.stage)) return { ok: true, terminal: true, state: safeClone(task) }
         if (task.stage !== "paused") task.resumeStage = task.stage
         task.stage = "paused"
         task.role = "none"
@@ -455,8 +450,34 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
           await persist("progress", { eventId: input.eventId, phaseId: phase.id })
           return { ok: true, phaseId: phase.id }
         }
+        if (input.action === "request_revision") {
+          if (task.stage !== "cheap" || task.role !== "cheap" || typeof input.reason !== "string" || !input.reason.trim()) return { ok: false, reason: "revision-request-requires-cheap-and-reason" }
+          task.revisionRequest = { kind: "plan", feedback: input.reason.trim().slice(0, 1000) }
+          const route = await routeToFrontier("plan-revision", { eventId: input.eventId, phaseId: task.currentPhaseId })
+          return { ok: route.action === "review-pending", route: route.action, reason: route.reason }
+        }
         if (input.action === "propose") {
-          if (!["hard", "soft"].includes(input.kind) || !isPlainObject(input.patch)) return { ok: false, reason: "invalid-proposal" }
+          if (!["hard", "soft", "plan"].includes(input.kind) || !isPlainObject(input.patch)) return { ok: false, reason: "invalid-proposal" }
+          if (input.kind === "plan") {
+            if (task.stage !== "frontier_review" || task.role !== "frontier" || !task.initialApproval) return { ok: false, reason: "plan-revision-requires-frontier-review" }
+            const error = validatePlan(input.patch, task.workspace)
+            if (error) return { ok: false, reason: error }
+            const phases = input.patch.phases
+            const currentIndex = task.phases.findIndex((phase) => phase.id === task.currentPhaseId)
+            if (phases[currentIndex]?.id !== task.currentPhaseId || task.completed.some((id, index) =>
+              phases[index]?.id !== id || JSON.stringify(phases[index]) !== JSON.stringify(task.phases[index])) ||
+              task.changed_files.some((path) => !isScratchPath(path) && !isPathAllowed(path, input.patch.hardContract.allowedPaths, input.patch.hardContract.protectedPaths))) {
+              return { ok: false, reason: "revision-must-preserve-completed-work-and-current-phase" }
+            }
+            const proposal = createProposal(task, { kind: "plan", patch: input.patch })
+            task = proposal.state
+            task.proposalResumeStage = task.stage
+            delete task.revisionRequest
+            task.stage = "awaiting_human_approval"
+            task.role = "none"
+            await persist("plan-revision-proposed", { eventId: input.eventId, reason: "human-plan-revision-approval-required" })
+            return { ok: true, proposalId: proposal.proposal.id, requiresHuman: true }
+          }
           if (input.kind === "soft" && task.role !== "frontier") return { ok: false, reason: "soft-refinement-requires-frontier" }
           if (input.kind === "soft" && input.patch.expectedFiles !== undefined &&
             (!Array.isArray(input.patch.expectedFiles) || input.patch.expectedFiles.some((path) => typeof path !== "string" ||
@@ -508,11 +529,14 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
           if (input.verdict === "continue") {
             task.stage = "cheap_pending"
             task.role = "cheap"
+            const confirmingRevision = task.revisionConfirmationPending
+            delete task.revisionConfirmationPending
             delete task.revisionRequest
-            const ok = await persist("review-continue", { eventId: input.eventId, phaseId, reason: input.reason ?? "continue-within-approved-scope" })
+            const ok = await persist(confirmingRevision ? "plan-revision-confirmed" : "review-continue", { eventId: input.eventId, phaseId, reason: input.reason ?? "continue-within-approved-scope" })
             return { ok, phaseId }
           }
           if (input.verdict === "pass") {
+            if (task.revisionConfirmationPending) return { ok: false, reason: "confirm-plan-revision-before-phase-review" }
             if (!isPhaseReady(task, phase)) return { ok: false, reason: "phase-evidence-incomplete-or-stale" }
             if (task.reviewIncludesFinal && (phaseAt(phase.id) !== task.phases.length - 1 ||
               task.phases.slice(0, -1).some((earlier) => !task.completed.includes(earlier.id)))) {
@@ -547,6 +571,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
             task.pending = [...ids]
             task.stage = "cheap_pending"
             task.role = "cheap"
+            delete task.revisionConfirmationPending
             delete task.revisionRequest
             const key = `${phase.id}:${task.planRevision}:${task.sourceRevision}`
             task.reviewRecords[key] = { verdict: "repair", timestamp: now() }
@@ -583,7 +608,10 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         if (!task || !proposalId) return { ok: false, reason: "proposal-not-found" }
         if (isTerminalStage(task.stage) || task.stage === "paused") return { ok: false, reason: "run-not-active" }
         const pending = task.proposals.find((proposal) => proposal.id === proposalId)
-        if (!pending || pending.status !== "pending") return { ok: false, reason: "proposal-not-found" }
+        if (!pending || pending.status !== "pending" || task.proposals.filter((proposal) => proposal.status === "pending").length !== 1 ||
+          pending.hardRevision !== task.hardRevision ||
+          ((pending.kind === "hard" || pending.kind === "plan" || pending.kind === "decision") &&
+            (task.stage !== "awaiting_human_approval" || task.proposalResumeStage !== "frontier_review"))) return { ok: false, reason: "proposal-not-found" }
         let current
         try { current = await snapshot() } catch {
           await stop("worktree-snapshot-failed")
@@ -599,7 +627,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         if (!result.ok) return result
         const previousStage = task.proposalResumeStage
         task = result.state
-        if (pending.kind === "hard" || pending.kind === "decision") {
+        if (pending.kind === "hard" || pending.kind === "decision" || pending.kind === "plan") {
           task.stage = previousStage
           task.role = previousStage?.includes("frontier") ? "frontier" : "cheap"
           delete task.proposalResumeStage
@@ -621,7 +649,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
         if (proposal.hardRevision !== task.hardRevision) return { ok: false, reason: "stale-proposal" }
         const currentProposal = proposal.kind === "initial"
           ? task.stage === "awaiting_approval" && task.role === "frontier" && task.planProposalId === proposalId
-          : proposal.kind === "hard"
+          : proposal.kind === "hard" || proposal.kind === "plan"
             ? task.stage === "awaiting_human_approval" && task.proposalResumeStage === "frontier_review"
             : proposal.kind === "final"
               ? task.stage === "awaiting_final_approval" && task.finalProposalId === proposalId
@@ -896,7 +924,7 @@ export function createPrewalkRuntime({ config = {}, deps = {} } = {}) {
     },
     async turnStart({ eventId, model } = {}) {
       return serialize(async () => {
-        if (!task || task.stage === "stopped" || task.stage === "complete") return { action: "none" }
+        if (!task || isTerminalStage(task.stage)) return { action: "none" }
         if (eventId && task.seenEventIds.includes(eventId)) return { action: "none", reason: "duplicate-event" }
         if (eventId) task.seenEventIds.push(eventId)
         const stopped = await stopForLimits(eventId)

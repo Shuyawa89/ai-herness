@@ -126,6 +126,212 @@ test("a pending initial plan can be revised without restarting Prewalk", async (
   } finally { fx.cleanup() }
 })
 
+test("Cheap can request a mid-work plan revision and only a displayed human approval changes checks", async () => {
+  const fx = fixture()
+  try {
+    await beginCheap(fx)
+    const original = fx.runtime.state()
+    assert.equal((await fx.runtime.checkpoint({ action: "submit_plan", plan: plan(fx.root) })).ok, false)
+    const requested = await fx.runtime.checkpoint({ eventId: "request-revision", action: "request_revision", reason: "Replace the required check" })
+    assert.equal(requested.ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_review_pending")
+    await fx.runtime.turnEnd({ eventId: "route-revision" })
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    const revised = plan(fx.root, { checkArgs: ["-e", "process.exit(1)"] })
+    const proposed = await fx.runtime.checkpoint({ eventId: "propose-revision", action: "propose", kind: "plan", patch: revised })
+    assert.equal(proposed.ok, true, proposed.reason)
+    assert.equal(fx.runtime.state().stage, "awaiting_human_approval")
+    assert.deepEqual(fx.runtime.state().phases, original.phases)
+    assert.equal((await fx.runtime.approve(proposed.proposalId, { baseRevision: "old" })).ok, false)
+    assert.equal((await fx.runtime.approve(proposed.proposalId)).ok, true)
+    assert.equal(fx.runtime.state().stage, "frontier_review")
+    assert.equal(fx.runtime.state().planRevision, original.planRevision + 1)
+    assert.deepEqual(fx.runtime.state().phases[0].checks[0].args, revised.phases[0].checks[0].args)
+    assert.equal((await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })).ok, false)
+    const reviewed = await fx.runtime.checkpoint({ eventId: "revision-confirmed", action: "verdict", phaseId: "phase-1", verdict: "continue" })
+    assert.equal(reviewed.ok, true)
+    assert.equal(fx.runtime.state().stage, "cheap_pending")
+    await fx.runtime.turnEnd({ eventId: "resume-cheap" })
+    assert.equal(fx.runtime.state().stage, "cheap")
+    assert.equal(fx.runtime.state().runId, original.runId)
+    assert.equal(fx.runtime.state().sessionId, original.sessionId)
+  } finally { fx.cleanup() }
+})
+
+test("rejected mid-work revisions preserve the current plan and support a fresh proposal", async () => {
+  const fx = fixture()
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Adjust checks" })
+    await fx.runtime.turnEnd({ eventId: "revision-turn" })
+    const first = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root, { checkArgs: ["-e", "process.exit(1)"] }) })
+    assert.equal((await fx.runtime.rejectProposal(first.proposalId, { feedback: "Keep the check passing" })).ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_revision")
+    assert.equal((await fx.runtime.provideRevisionFeedback("Keep the check passing")).ok, true)
+    const second = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root, { checkArgs: ["-e", "process.exit(2)"] }) })
+    assert.equal(second.ok, true)
+    assert.notEqual(first.proposalId, second.proposalId)
+    assert.equal((await fx.runtime.approve(first.proposalId)).ok, false)
+    await fx.runtime.cancel()
+    assert.equal((await fx.runtime.approve(second.proposalId)).ok, false)
+    assert.equal(fx.runtime.observeToolCall({ id: "ordinary-bash", name: "bash", input: { command: "pwd" } }), undefined)
+  } finally { fx.cleanup() }
+})
+
+test("a revised check cannot reuse a previous success while unrelated progress survives", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: false } })
+  try {
+    await beginCheap(fx, { secondPhase: true })
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    const before = fx.runtime.state()
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Change test args" })
+    await fx.runtime.turnEnd({ eventId: "review-revision" })
+    const changed = plan(fx.root, { secondPhase: true, checkArgs: ["-e", "process.exit(1)"] })
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: changed })
+    await fx.runtime.approve(proposed.proposalId)
+    assert.equal(fx.runtime.state().phases[0].todos[0].status, "ready")
+    assert.deepEqual(fx.runtime.state().completed, before.completed)
+    assert.notEqual(fx.runtime.state().validation_results["test-1"]?.status, "passed")
+    await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "continue" })
+    await fx.runtime.turnEnd({ eventId: "return-to-cheap" })
+    await fx.runtime.completeToolBatch({ eventId: "after-revision" })
+    assert.equal(fx.runtime.state().stage, "cheap", "changed checks must not trigger a false phase pass")
+  } finally { fx.cleanup() }
+})
+
+test("revision request survives reload and respects the escalation limit", async () => {
+  const fx = fixture({ config: { maxEscalations: 1 } })
+  try {
+    await beginCheap(fx)
+    const request = await fx.runtime.checkpoint({ action: "request_revision", reason: "Replace a planned check" })
+    assert.equal(request.ok, true)
+    const restored = createPrewalkRuntime({ deps: { cwd: fx.root, getBranch: () => fx.entries, appendEntry: (type, data) => fx.entries.push({ type, data }), snapshot: async () => ({}) } })
+    assert.equal((await restored.restore({ sessionId: "session-1", workspace: fx.root })).ok, true)
+    assert.equal(restored.state().resumeStage, "frontier_review_pending")
+    assert.equal(restored.state().revisionRequest?.feedback, "Replace a planned check")
+    assert.equal((await restored.resume()).ok, true)
+    assert.equal((await restored.turnEnd({ eventId: "restored-revision" })).action, "switched")
+    assert.equal(restored.state().stage, "frontier_review")
+    await restored.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "continue" })
+    await restored.turnEnd({ eventId: "restore-cheap" })
+    const limited = await restored.checkpoint({ action: "request_revision", reason: "Another revision" })
+    assert.equal(limited.ok, false)
+    assert.equal(restored.state().stage, "stopped")
+  } finally { fx.cleanup() }
+})
+
+test("revisions preserve completed phases and refuse to alter already approved phase history", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: false } })
+  try {
+    await beginCheap(fx, { secondPhase: true })
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.completeToolBatch({ eventId: "phase-ready" })
+    await fx.runtime.turnEnd({ eventId: "review-phase-1" })
+    await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    await fx.runtime.turnEnd({ eventId: "cheap-phase-2" })
+    assert.deepEqual(fx.runtime.state().completed, ["phase-1"])
+    const old = fx.runtime.state()
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Change phase 2 check" })
+    await fx.runtime.turnEnd({ eventId: "revise-phase-2" })
+    const updated = structuredClone(old.plan)
+    updated.phases = structuredClone(old.phases)
+    updated.phases[1].checks[0].args = ["-e", "process.exit(1)"]
+    const invalid = structuredClone(updated)
+    invalid.phases[0].todos[0].text = "Rewrite completed phase"
+    assert.equal((await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: invalid })).ok, false)
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: updated })
+    assert.equal(proposed.ok, true, proposed.reason)
+    assert.equal((await fx.runtime.approve(proposed.proposalId)).ok, true)
+    assert.deepEqual(fx.runtime.state().completed, ["phase-1"])
+    assert.equal(fx.runtime.state().currentPhaseId, "phase-2")
+  } finally { fx.cleanup() }
+})
+
+test("an approved plan revision restores on Frontier and cannot pass a ready phase before confirmation", async () => {
+  const fx = fixture()
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.validate("test-1")
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Change constraints without completing the phase" })
+    await fx.runtime.turnEnd({ eventId: "review-constraints" })
+    const patch = structuredClone(fx.runtime.state().plan)
+    patch.hardContract.constraints.push("Preserve existing behavior")
+    const proposal = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch })
+    assert.equal(proposal.ok, true, proposal.reason)
+    assert.equal((await fx.runtime.approve(proposal.proposalId)).ok, true)
+    const saved = fx.runtime.state()
+    const restored = createPrewalkRuntime({ deps: {
+      cwd: fx.root, getBranch: () => fx.entries,
+      appendEntry: (type, data) => fx.entries.push({ type, data }),
+      snapshot: async () => ({}),
+    } })
+    assert.equal((await restored.restore({ sessionId: "session-1", workspace: fx.root })).ok, true)
+    assert.equal(restored.state().resumeStage, "frontier_review")
+    assert.equal((await restored.resume()).ok, true)
+    assert.equal((await restored.checkpoint({ action: "verdict", verdict: "pass", phaseId: "phase-1" })).reason, "confirm-plan-revision-before-phase-review")
+    assert.deepEqual(restored.state().completed, [])
+    assert.equal((await restored.checkpoint({ action: "verdict", verdict: "continue", phaseId: "phase-1" })).ok, true)
+    assert.equal((await restored.turnEnd({ eventId: "confirmed-revision" })).action, "switched")
+    assert.equal(restored.state().stage, "cheap")
+    assert.equal(restored.state().hardRevision, saved.hardRevision)
+  } finally { fx.cleanup() }
+})
+
+test("revision approval rejects external edits and model-switch failure leaves routing stopped", async () => {
+  for (const failure of ["external-edit", "model-switch"]) {
+    const fx = fixture()
+    try {
+      await beginCheap(fx)
+      if (failure === "model-switch") {
+        const state = fx.runtime.state()
+        const restored = createPrewalkRuntime({ deps: { cwd: fx.root, getBranch: () => fx.entries, snapshot: async () => ({}), setModel: async () => false } })
+        await restored.restore({ sessionId: state.sessionId, workspace: fx.root })
+        await restored.resume()
+        await restored.checkpoint({ action: "request_revision", reason: "Update checks" })
+        assert.equal((await restored.turnEnd({ eventId: "failed-revision-switch" })).reason, "model-switch-failed")
+        assert.equal(restored.state().stage, "stopped")
+        assert.equal(restored.observeToolCall({ id: "after-failure", name: "read", input: { path: "README.md" } }), undefined)
+      } else {
+        await fx.runtime.checkpoint({ action: "request_revision", reason: "Update checks" })
+        await fx.runtime.turnEnd({ eventId: "propose-after-request" })
+        const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root) })
+        fx.setFiles({ "src/a.mjs": "external edit" })
+        assert.equal((await fx.runtime.approve(proposed.proposalId)).reason, "worktree-changed-before-approval")
+        assert.equal(fx.runtime.state().stage, "stopped")
+      }
+    } finally { fx.cleanup() }
+  }
+})
+
+test("normal phase validation and final approval remain required after a revision confirmation", async () => {
+  const fx = fixture({ config: { milestoneReview: true, finalReview: true } })
+  try {
+    await beginCheap(fx)
+    await fx.runtime.checkpoint({ action: "request_revision", reason: "Update the check" })
+    await fx.runtime.turnEnd({ eventId: "revision-frontier" })
+    const proposed = await fx.runtime.checkpoint({ action: "propose", kind: "plan", patch: plan(fx.root, { checkArgs: ["-e", "process.stdout.write('ok')"] }) })
+    assert.equal((await fx.runtime.approve(proposed.proposalId)).ok, true)
+    await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "continue" })
+    await fx.runtime.turnEnd({ eventId: "revised-build" })
+    assert.deepEqual(fx.runtime.state().completed, [])
+    await fx.runtime.checkpoint({ action: "progress", phaseId: "phase-1", todos: [{ id: "todo-1", status: "ready" }] })
+    await fx.runtime.completeToolBatch({ eventId: "missing-revised-check" })
+    assert.equal(fx.runtime.state().stage, "cheap")
+    assert.equal((await fx.runtime.validate("test-1")).status, "passed")
+    await fx.runtime.completeToolBatch({ eventId: "ready-revised-check" })
+    await fx.runtime.turnEnd({ eventId: "normal-final-review" })
+    assert.equal(fx.runtime.state().reviewIncludesFinal, true)
+    const passed = await fx.runtime.checkpoint({ action: "verdict", phaseId: "phase-1", verdict: "pass" })
+    assert.equal(passed.ok, true)
+    assert.equal(fx.runtime.state().stage, "awaiting_final_approval")
+    assert.equal((await fx.runtime.approve(passed.finalProposalId)).ok, true)
+    assert.equal(fx.runtime.state().stage, "complete")
+  } finally { fx.cleanup() }
+})
+
 test("ordinary Cheap shell and unknown tools remain usable; exact bash check outcomes are observed", async () => {
   const fx = fixture()
   try {
