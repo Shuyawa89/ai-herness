@@ -6,6 +6,7 @@
 - Write code, comments, identifiers, and technical documentation in English unless repository instructions require otherwise.
 - Write commit messages in Japanese.
 - Lead with outcomes and keep explanations concise.
+- Use only widely understood abbreviations. Do not invent abbreviated labels to refer to decisions or suggestions; refer to their substance directly. When numbering is necessary, spell out the label, such as "Decision 3".
 
 ## Working With the User
 
@@ -15,8 +16,11 @@
 - Briefly define unfamiliar terms and introduce no more new concepts than the current task requires.
 - Clearly distinguish Java, Spring, Web, database, and architecture concepts when those boundaries matter.
 - When several realistic approaches exist, summarize the main alternatives and why one is chosen.
+- Evaluate user feedback before adopting it; do not agree merely because the user proposed it. Explain the reasoning for acceptance or disagreement. If the meaning is unclear, identify what is unclear and ask a focused question or confirm a concrete interpretation before accepting it.
+- Remove unnecessary instructions rather than rephrasing them as optional permissions or inverse statements. If removal would lose an important constraint, explain why it is still needed.
 - Before a non-trivial implementation, state the intended end state and the important design decisions.
 - Surface relevant concerns the user may have missed, especially domain rules, responsibility boundaries, authorization, transactions, error handling, data exposure, compatibility, and tests.
+- Make every approval request self-contained in the user-facing output: state what will change and why, what is in and out of scope, key choices and risks, and exactly what needs approval. Linked files may provide detail, but must not be required to understand or judge the proposal.
 
 ## Instruction Priority
 
@@ -31,7 +35,7 @@
 - For complex or risky work, state and maintain a short plan.
 - Delegate bounded work to specialized agents when supported and beneficial.
 - Parallelize independent work while assigning clear ownership and avoiding edit conflicts.
-- Prefer reversible, minimal changes.
+- Prefer reversible changes limited to the agreed goal. Avoid unrelated reordering, renaming, formatting, or opportunistic refactoring; seek approval before expanding scope. Minimal changes must still include necessary fixes and tests.
 - Use `rg` or `rg --files` for searches when available.
 
 ## Session Arc
@@ -61,6 +65,7 @@ A new request does not resume an unfinished plan unless the user explicitly refe
 - Run focused tests before broader validation.
 - Maintain at least 80% coverage where the project measures coverage; do not invent coverage claims.
 - Favor immutable data, explicit error handling, small modules, and established project patterns.
+- Add comments only when needed to explain intent that the code does not make clear. Explain why the code exists and, when relevant to maintenance, why an alternative was rejected; do not narrate obvious operations or mechanically add comments everywhere.
 - Respect the project's existing package manager and lockfiles.
 - For new setup, use `mise` for tool versions, `uv` for Python, and `pnpm` for JavaScript/TypeScript.
 
