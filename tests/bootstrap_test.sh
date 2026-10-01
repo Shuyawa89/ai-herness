@@ -75,6 +75,7 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.pi/agent/AGENTS.md" "$canonical_repo/AGENTS.md"
   assert_link "$user_home/.pi/agent/extensions/ai-harness-prewalk.ts" "$canonical_repo/extensions/pi-prewalk.ts"
   assert_link "$user_home/.pi/agent/extensions/prewalk-core.mjs" "$canonical_repo/extensions/prewalk-core.mjs"
+  assert_link "$user_home/.pi/agent/extensions/prewalk-runtime.mjs" "$canonical_repo/extensions/prewalk-runtime.mjs"
   assert_link "$user_home/.claude/skills/explore" "$canonical_repo/skills/explore"
   assert_link "$user_home/.codex/skills/explore" "$canonical_repo/skills/explore"
   assert_link "$user_home/.claude/skills/understand" "$canonical_repo/skill-variants/explicit/understand"
@@ -197,6 +198,35 @@ test_mid_install_failure_rolls_back() {
   [ -f "$user_home/.codex" ] || fail 'rollback changed the blocking path'
 }
 
+test_missing_runtime_module_stops_preflight() {
+  local case_root="$TEST_ROOT/missing-runtime"
+  local copied_repo="$case_root/repo"
+  local user_home="$case_root/home"
+
+  mkdir -p "$case_root" "$user_home"
+  cp -R "$REPO_ROOT" "$copied_repo"
+  rm "$copied_repo/extensions/prewalk-runtime.mjs"
+
+  expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/state" "$copied_repo/bootstrap" --dry-run
+  [ ! -e "$user_home/.claude/CLAUDE.md" ] || fail 'missing runtime module preflight made a change'
+  [ ! -e "$case_root/state" ] || fail 'missing runtime module preflight created state'
+}
+
+test_symlinked_runtime_module_stops_preflight() {
+  local case_root="$TEST_ROOT/symlinked-runtime"
+  local copied_repo="$case_root/repo"
+  local user_home="$case_root/home"
+
+  mkdir -p "$case_root" "$user_home"
+  cp -R "$REPO_ROOT" "$copied_repo"
+  mv "$copied_repo/extensions/prewalk-runtime.mjs" "$case_root/runtime-placeholder.mjs"
+  ln -s "$case_root/runtime-placeholder.mjs" "$copied_repo/extensions/prewalk-runtime.mjs"
+
+  expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/state" "$copied_repo/bootstrap" --dry-run
+  [ ! -e "$user_home/.claude/CLAUDE.md" ] || fail 'symlinked runtime module preflight made a change'
+  [ ! -e "$case_root/state" ] || fail 'symlinked runtime module preflight created state'
+}
+
 test_missing_skill_file_stops_preflight() {
   local case_root="$TEST_ROOT/malformed"
   local copied_repo="$case_root/repo"
@@ -258,6 +288,82 @@ test_missing_allowlisted_skill_fails_preflight() {
   mv "$copied_repo/skills/explore" "$case_root/removed-explore"
 
   expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$case_root/state" "$copied_repo/bootstrap" --dry-run
+}
+
+test_removed_runtime_module_is_detected_and_cleaned() {
+  local case_root="$TEST_ROOT/removed-runtime"
+  local copied_repo="$case_root/repo"
+  local user_home="$case_root/home"
+  local state_root="$case_root/state"
+  local runtime_link="$user_home/.pi/agent/extensions/prewalk-runtime.mjs"
+  local manifest="$state_root/managed-links.tsv"
+
+  mkdir -p "$case_root" "$user_home"
+  cp -R "$REPO_ROOT" "$copied_repo"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+  grep -Fq 'prewalk-runtime.mjs' "$manifest" || fail 'runtime link missing from managed manifest'
+
+  grep -Fv 'add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-runtime.mjs"' "$copied_repo/bootstrap" > "$case_root/bootstrap.tmp"
+  mv "$case_root/bootstrap.tmp" "$copied_repo/bootstrap"
+  chmod +x "$copied_repo/bootstrap"
+  expect_status 1 run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" --check
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+
+  [ ! -L "$runtime_link" ] || fail 'removed runtime module link remains'
+  ! grep -Fq 'prewalk-runtime.mjs' "$manifest" || fail 'removed runtime module remains in managed manifest'
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" --check >/dev/null
+}
+
+test_unknown_runtime_manifest_target_is_preserved() {
+  local case_root="$TEST_ROOT/unknown-runtime-target"
+  local copied_repo="$case_root/repo"
+  local user_home="$case_root/home"
+  local state_root="$case_root/state"
+  local runtime_link="$user_home/.pi/agent/extensions/prewalk-runtime.mjs"
+  local manifest="$state_root/managed-links.tsv"
+  local unknown_target="$case_root/untrusted/extensions/not-runtime.mjs"
+
+  mkdir -p "$case_root" "$user_home"
+  cp -R "$REPO_ROOT" "$copied_repo"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+  grep -Fv 'add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-runtime.mjs"' "$copied_repo/bootstrap" > "$case_root/bootstrap.tmp"
+  mv "$case_root/bootstrap.tmp" "$copied_repo/bootstrap"
+  chmod +x "$copied_repo/bootstrap"
+  awk -F '\t' -v path="$runtime_link" -v target="$unknown_target" 'BEGIN { OFS="\t" } $1 == path { $2 = target } { print }' "$manifest" > "$case_root/manifest.tmp"
+  mv "$case_root/manifest.tmp" "$manifest"
+  rm "$runtime_link"
+  ln -s "$unknown_target" "$runtime_link"
+
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+  assert_link "$runtime_link" "$unknown_target"
+  ! grep -Fq 'prewalk-runtime.mjs' "$manifest" || fail 'unrecognized runtime target remains managed'
+}
+
+test_runtime_link_rollbacks() {
+  local case_root="$TEST_ROOT/runtime-rollback"
+  local created_repo="$case_root/created/repo"
+  local created_home="$case_root/created/home"
+  local created_state="$case_root/created/state"
+  local restored_repo="$case_root/restored/repo"
+  local restored_home="$case_root/restored/home"
+  local restored_state="$case_root/restored/state"
+  local runtime_path
+
+  mkdir -p "$case_root/created" "$created_home/.claude" "$case_root/restored" "$restored_home/.claude" "$restored_home/.pi/agent/extensions"
+  cp -R "$REPO_ROOT" "$created_repo"
+  printf '%s\n' 'blocks skill link creation' > "$created_home/.claude/skills"
+  expect_status 1 run_bootstrap "$created_repo/bootstrap" "$created_home" "$created_state"
+  [ ! -L "$created_home/.pi/agent/extensions/prewalk-runtime.mjs" ] || fail 'rollback left the new runtime link installed'
+  [ ! -e "$created_state/managed-links.tsv" ] || fail 'rollback retained the new managed manifest'
+
+  cp -R "$REPO_ROOT" "$restored_repo"
+  runtime_path="$restored_home/.pi/agent/extensions/prewalk-runtime.mjs"
+  cp "$restored_repo/extensions/prewalk-runtime.mjs" "$runtime_path"
+  printf '%s\n' 'blocks skill link creation' > "$restored_home/.claude/skills"
+  expect_status 1 run_bootstrap "$restored_repo/bootstrap" "$restored_home" "$restored_state"
+  [ -f "$runtime_path" ] && [ ! -L "$runtime_path" ] || fail 'rollback did not restore the pre-existing runtime file'
+  cmp "$restored_repo/extensions/prewalk-runtime.mjs" "$runtime_path" >/dev/null || fail 'rollback restored the wrong runtime file'
+  [ ! -e "$restored_state/managed-links.tsv" ] || fail 'rollback retained the restored-case manifest'
 }
 
 test_broken_skill_link_is_repaired() {
@@ -343,6 +449,7 @@ test_stale_cleanup_failure_rolls_back() {
   rm "$user_home/.pi/agent/AGENTS.md"
   rm "$user_home/.pi/agent/extensions/ai-harness-prewalk.ts"
   rm "$user_home/.pi/agent/extensions/prewalk-core.mjs"
+  rm "$user_home/.pi/agent/extensions/prewalk-runtime.mjs"
   rmdir "$user_home/.pi/agent/extensions"
   rmdir "$user_home/.pi/agent"
   rmdir "$user_home/.pi"
@@ -365,10 +472,15 @@ test_fresh_install_backup_and_idempotency
 test_dry_run_has_no_side_effects
 test_skill_conflict_stops_preflight
 test_mid_install_failure_rolls_back
+test_missing_runtime_module_stops_preflight
+test_symlinked_runtime_module_stops_preflight
 test_missing_skill_file_stops_preflight
 test_paths_with_spaces
 test_removed_skill_is_detected_and_cleaned
 test_missing_allowlisted_skill_fails_preflight
+test_removed_runtime_module_is_detected_and_cleaned
+test_unknown_runtime_manifest_target_is_preserved
+test_runtime_link_rollbacks
 test_broken_skill_link_is_repaired
 test_source_symlink_is_rejected
 test_source_root_symlinks_are_rejected
