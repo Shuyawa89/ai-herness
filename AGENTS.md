@@ -21,6 +21,7 @@
 - Before a non-trivial implementation, state the intended end state and the important design decisions.
 - Surface relevant concerns the user may have missed, especially domain rules, responsibility boundaries, authorization, transactions, error handling, data exposure, compatibility, and tests.
 - Make every approval request self-contained in the user-facing output: state what will change and why, what is in and out of scope, key choices and risks, and exactly what needs approval. Linked files may provide detail, but must not be required to understand or judge the proposal.
+- Treat `.temp-local/workflow-plan.md` primarily as guidance for agents. When citing it in user-facing explanations, quote the relevant text and explain its meaning in context so the output is understandable on its own. File links and node identifiers may supplement the explanation.
 
 ## Instruction Priority
 
