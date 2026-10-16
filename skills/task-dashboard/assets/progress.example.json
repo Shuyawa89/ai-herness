@@ -1,0 +1,80 @@
+{
+  "id": "example-product-search",
+  "title": "Example: product search implementation",
+  "summary": "Fictional sample data. Replace this report with the actual task before sharing the dashboard.",
+  "status": "running",
+  "startedAt": "2026-10-16T01:00:00Z",
+  "phase": 1,
+  "phases": [
+    {
+      "name": "Design",
+      "items": [{"name": "Define search behavior", "status": "completed"}]
+    },
+    {
+      "name": "Implementation",
+      "items": [
+        {
+          "name": "Search API",
+          "children": [
+            {"name": "Query validation", "status": "completed"},
+            {"name": "Result ordering", "status": "running"}
+          ]
+        },
+        {"name": "Search form", "status": "running"}
+      ]
+    },
+    {
+      "name": "Verification",
+      "items": [{"name": "End-to-end search", "status": "pending"}]
+    }
+  ],
+  "agents": [
+    {
+      "id": "coordinator",
+      "name": "Coordinator",
+      "role": "Overall task",
+      "status": "running",
+      "current": "Reviewing API and screen integration",
+      "model": null,
+      "startedAt": "2026-10-16T01:00:00Z",
+      "launchMethod": "session"
+    },
+    {
+      "id": "api",
+      "name": "API agent",
+      "role": "Search API",
+      "status": "running",
+      "current": "Implementing result ordering",
+      "parentId": "coordinator",
+      "launchMethod": "subagent"
+    },
+    {
+      "id": "screen",
+      "name": "Screen agent",
+      "role": "Search interface",
+      "status": "running",
+      "current": "Building the search form",
+      "launchMethod": "command"
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-10-16T01:05:00Z",
+      "title": "Search behavior agreed",
+      "detail": "Fictional example milestone",
+      "kind": "milestone"
+    },
+    {
+      "agentId": "api",
+      "at": "2026-10-16T01:12:00Z",
+      "title": "Query validation completed",
+      "kind": "progress"
+    },
+    {
+      "agentId": "screen",
+      "at": "2026-10-16T01:14:00Z",
+      "title": "Search form implementation started",
+      "kind": "progress"
+    }
+  ]
+}

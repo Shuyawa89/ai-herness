@@ -129,3 +129,13 @@ The current request's language selects one role and one Skill; the harness does 
 The bootstrap deliberately does not modify `~/.codex/config.toml`, Claude settings, Pi settings, authentication, hooks, agents, or prompts. It adds only the reviewed shared Skills and the reviewed Pi Prewalk extension as symlinks. Repository-specific `AGENTS.md` and `CLAUDE.md` files continue to apply according to each tool's normal precedence rules.
 
 When working inside this repository, the same `AGENTS.md` may be discovered once globally and once as project guidance. This is harmless, but other repositories are the normal working location for this harness.
+
+## Live task dashboard
+
+`skills/task-dashboard/` provides a shared static template for one task's plan, participants, current work, models, elapsed times, and history. An existing Pi, Claude Code, Codex, or other file-writing agent session can read the [skill](skills/task-dashboard/SKILL.md) and continue its work. No special agent launch command or CLI extension is required.
+
+The agent copies the template into a dedicated `.temp-local/` folder in the working project, writes actual task data to `progress.json`, and supplies a loopback URL using an ordinary static server. The viewer polls the file without model activity. Plans support arbitrary phases and nested work; participants include both subagents and separately command-launched agents.
+
+The coordinating agent owns the JSON snapshot and updates it at milestones, plan changes, and blockers. Known models and timestamps are optional. This is reported progress rather than strict process monitoring: a stopped writer leaves the last report visible, and old data never implies termination. The [example data](skills/task-dashboard/assets/progress.example.json) is replaced with actual task information before sharing. `task-dashboard` is on the bootstrap shared-skill allowlist and is linked into the Pi, Claude Code, and Codex skill locations during normal setup.
+
+Checks: `node --test tests/dashboard-template.test.mjs`.

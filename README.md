@@ -131,3 +131,13 @@ pi
 bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証、hooks、agents、prompts を意図的に変更しない。追加するのはレビュー済みの共有 Skill とレビュー済みの Pi Prewalk extension の symlink のみ。リポジトリ固有の `AGENTS.md` と `CLAUDE.md` は、各ツールの通常の優先順位ルールに従って適用される。
 
 このリポジトリ内で作業するとき、同じ `AGENTS.md` がグローバルとプロジェクトの両方として検出されることがある。これは無害だが、この harness の通常の作業場所は他のリポジトリである。
+
+## タスクのライブダッシュボード
+
+`skills/task-dashboard/` は、一つの長時間タスクの計画・担当・現在の作業・モデル・経過時間・履歴を表示する共通テンプレートです。普段どおり開始した Pi、Claude Code、Codex などのセッションで[スキル](skills/task-dashboard/SKILL.md)を読み込み、そのまま利用できます。専用の起動コマンドや CLI 拡張は不要です。
+
+AI がテンプレートを対象プロジェクトの専用 `.temp-local/` フォルダーへ配置し、実際の進捗を `progress.json` に記録して、通常の静的サーバーでローカル URL を提供します。画面は JSON を定期的に読み込みます。計画の段階数や作業の階層は自由で、サブエージェントもコマンド起動の別エージェントも同じ一覧に表示できます。
+
+更新は節目や問題発生時に行い、JSON の書き込みは調整役の AI に集約します。モデルや時刻は判明している場合だけ記録します。厳密な稼働監視や自動検出は行わず、報告が止まっても停止とは判定しません。画面には最後の報告が残ります。共有前に [サンプルデータ](skills/task-dashboard/assets/progress.example.json)を実際のタスク情報に置き換えます。`task-dashboard` は bootstrap の共有スキル配布対象です。通常のセットアップで Pi・Claude Code・Codex のスキル配置先へリンクされます。
+
+検証: `node --test tests/dashboard-template.test.mjs`。
