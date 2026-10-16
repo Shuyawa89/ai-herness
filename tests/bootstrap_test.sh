@@ -89,6 +89,9 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.claude/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
   assert_link "$user_home/.agents/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
   assert_link "$user_home/.codex/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.claude/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
+  assert_link "$user_home/.agents/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
+  assert_link "$user_home/.codex/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'

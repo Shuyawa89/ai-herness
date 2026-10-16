@@ -410,6 +410,7 @@ SKILL_ALLOWLIST=(
   design-check
   i-have-adhd
   consulting-pptx-skill
+  task-dashboard
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand

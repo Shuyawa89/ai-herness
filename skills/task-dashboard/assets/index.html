@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Taskroom — タスクの実行状況</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23295acb'/%3E%3Cpath d='M9 10h14M16 10v14' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">メインコンテンツへ</a>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Taskroom"><span class="brand-mark" aria-hidden="true">T</span>Taskroom</a>
+    <span class="topbar-context">エージェントの実行状況</span>
+    <span class="connection-label" id="connection-label">読み込み中</span>
+  </header>
+  <div class="workspace">
+    <aside class="sidebar" aria-label="実行の情報">
+      <div class="workspace-label"><span class="project-mark" aria-hidden="true">T</span><div>Taskroom<small>ローカルワークスペース</small></div></div>
+      <div class="sidebar-section"><span class="section-label">今回のタスク</span><div class="run-selected"><span aria-hidden="true">◉</span><div><span id="sidebar-title">読み込み中</span><small id="run-id"></small></div></div></div>
+      <dl class="run-meta"><div><dt>開始時刻</dt><dd id="start-time">—</dd></div></dl>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="breadcrumb">タスク <span aria-hidden="true">/</span> <strong id="breadcrumb-run">読み込み中</strong></div>
+      <div id="connection-notice" role="status" aria-live="polite" hidden></div>
+      <div id="overview"><p class="empty-history">タスクを読み込んでいます…</p></div>
+      <section class="plan-section" aria-labelledby="plan-title"><div class="section-heading"><h2 id="plan-title">実行計画</h2><span id="task-count" class="muted"></span></div><div id="phases" class="phase-strip"></div><div id="phase-detail" class="phase-detail"></div></section>
+      <div class="work-grid">
+        <section class="agents-section" aria-labelledby="agents-title"><div class="section-heading"><h2 id="agents-title">エージェント <span class="count" id="agent-count">0</span></h2></div><div id="agent-list" class="agent-list"><p class="empty-history">読み込み中…</p></div></section>
+        <section class="inspector" aria-labelledby="inspector-title" id="inspector"><h2 id="inspector-title">エージェントの詳細</h2></section>
+      </div>
+      <section class="activity-section" aria-labelledby="activity-title"><div class="section-heading"><h2 id="activity-title">全体のアクティビティ</h2><label class="filter-label">表示する履歴 <select id="activity-filter"><option value="all">すべて</option><option value="milestone">節目</option><option value="issues">確認・エラー</option></select></label></div><div id="activity"></div></section>
+      <footer class="page-footer">エージェントが報告した進捗を表示しています。</footer>
+    </main>
+  </div>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript>この画面の表示にはJavaScriptが必要です。</noscript>
+</body>
+</html>
