@@ -22,6 +22,11 @@ function testConfigAndArguments() {
     first_model: testConfig.firstModel,
     second_model: testConfig.secondModel,
   }), testConfig)
+  assert.deepEqual(parsePrewalkConfig({
+    frontier_model: testConfig.firstModel,
+    cheap_model: testConfig.secondModel,
+  }), testConfig)
+  assert.throws(() => parsePrewalkConfig({ first_model: "one/model", frontier_model: "other/model", second_model: "two/model" }), /conflict/)
   assert.deepEqual(parsePrewalkArgs("", testConfig), testConfig)
   assert.deepEqual(parsePrewalkArgs("provider-c/model-c", testConfig), {
     firstModel: testConfig.firstModel,
@@ -35,6 +40,11 @@ function testConfigAndArguments() {
   assert.throws(() => parsePrewalkArgs("one two three", testConfig), /expects zero, one, or two model IDs/)
   assert.throws(() => parsePrewalkArgs("invalid", testConfig), /provider\/model/)
   assert.throws(() => parsePrewalkConfig({ first_model: "provider/model" }), /second_model/)
+  assert.throws(() => parsePrewalkConfig(null), /JSON object/)
+  assert.throws(() => parsePrewalkConfig({ second_model: "provider/model" }), /first_model/)
+  assert.throws(() => parsePrewalkConfig({ first_model: "provider/model", second_model: "" }), /second_model/)
+  assert.throws(() => parsePrewalkConfig({ first_model: "bad", second_model: "provider/model" }), /provider\/model/)
+  assert.throws(() => parsePrewalkConfig({ first_model: "provider/model", second_model: "provider/model", cheap_model: "other/model" }), /conflict/)
 }
 
 function testPlanPaths() {
@@ -56,6 +66,7 @@ function testHandoffState() {
   assert.equal(state.observeToolCall("plan", "write", { path: ".temp-local/workflow-plan.md" }), undefined)
   assert.match(state.observeToolCall("code-before-plan-result", "edit", { path: "src/app.ts" }).reason, /plan file first/)
   state.observeToolResult("plan", false)
+  assert.equal(state.approvePlan(), true)
   assert.equal(state.observeToolCall("read", "read", { path: "src/app.ts" }), undefined)
   assert.equal(state.observeToolCall("code", "edit", { path: "src/app.ts" }), undefined)
   assert.equal(state.readyToHandoff(), false)
@@ -81,6 +92,7 @@ function testFailedWritesDoNotAdvanceState() {
 
   state.observeToolCall("plan", "write", { path: ".temp-local/workflow-plan.md" })
   state.observeToolResult("plan", false)
+  state.approvePlan()
   state.observeToolCall("failed-code", "edit", { path: "src/app.ts" })
   state.observeToolResult("failed-code", true)
   assert.equal(state.readyToHandoff(), false)
