@@ -1,4 +1,4 @@
-import { normalizeProgress, agentHealth, taskHealth, workForPhase, planCounts, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth } from './state.mjs';
+import { normalizeProgress, agentHealth, taskHealth, workForPhase, planCounts, phaseCounts, phaseState, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth } from './state.mjs';
 import { escapeHtml as e, timeOf } from './format.mjs';
 
 const $ = id => document.getElementById(id);
@@ -12,7 +12,7 @@ let requestActive = false;
 const clock = () => Date.now();
 const durationTag = entity => `<span data-status="${e(entity.status)}" data-start="${e(timestamp(entity.startedAt))}"${entity.endedAt == null ? '' : ` data-end="${e(timestamp(entity.endedAt))}"`}></span>`;
 const badge = (label, tone) => `<span class="status ${e(tone)}"><span class="tiny-dot" aria-hidden="true"></span>${e(label)}</span>`;
-const executionBadge = agent => { const health = agentHealth(agent); return badge(health.label, health.tone); };
+const executionBadge = agent => { const health = agentHealth(agent); return badge(health.label, health.tone).replace('class="tiny-dot"', agent.status === 'running' ? 'class="agent-spinner"' : 'class="tiny-dot"'); };
 const launchLabels = { session: 'メイン', subagent: 'サブエージェント', command: 'コマンド起動' };
 const htmlCache = new Map();
 function replace(id, html) {
@@ -28,8 +28,6 @@ function replace(id, html) {
 function updateConnection(ok) {
   const changed = connected !== ok;
   connected = ok;
-  $('connection-label').textContent = ok ? '進捗を表示中' : 'データを再取得中';
-  $('connection-label').classList.toggle('offline', !ok);
   $('connection-notice').hidden = ok;
   $('connection-notice').className = 'connection-notice';
   if (!ok) $('connection-notice').textContent = hasConnected
@@ -59,16 +57,19 @@ function renderWork(items) {
   }).join('')}</ul>`;
 }
 function renderPhases() {
-  const counts = planCounts(run);
-  $('task-count').textContent = counts.total ? `${counts.completed} / ${counts.total} 作業完了` : '';
+  const counts = phaseCounts(run);
+  $('task-count').textContent = counts.total ? `${counts.completed} / ${counts.total} フェーズ完了` : '';
   replace('phases', run.phases.map((phase, index) => {
-    const done = run.status === 'completed' || index < run.phase;
-    const current = run.status !== 'completed' && index === run.phase;
-    return `<button id="phase-${index}" class="phase-button ${done ? 'done' : ''} ${current ? 'current' : ''}" type="button" data-phase="${index}" aria-pressed="${index === selectedPhase}" ${current ? 'aria-current="step"' : ''}><span class="phase-number" aria-hidden="true">${done ? '✓' : index + 1}</span><span class="phase-label">${e(phase.name)}<small>${done ? '完了' : current ? '現在のフェーズ' : '未着手'}</small></span></button>`;
+    const state = phaseState(run, index);
+    const done = state === 'completed';
+    const current = !done && index === run.phase;
+    const label = done ? '完了' : ['waiting', 'failed', 'running'].includes(state) ? agentHealth({ status: state }).label : current ? '現在のフェーズ' : state === 'pending' ? '未着手' : '未報告';
+    return `<button id="phase-${index}" class="phase-button ${done ? 'done' : ''} ${current ? 'current' : ''}" type="button" data-phase="${index}" aria-pressed="${index === selectedPhase}" ${current ? 'aria-current="step"' : ''}><span class="phase-number" aria-hidden="true">${done ? '✓' : index + 1}</span><span class="phase-label">${e(phase.name)}<small>${label}</small></span></button>`;
   }).join(''));
   const phase = run.phases[selectedPhase];
+  const work = planCounts(run, selectedPhase);
   replace('phase-detail', phase
-    ? `<h3>${e(phase.name)}の作業</h3>${phase.items?.length ? renderWork(workForPhase(run, selectedPhase)) : '<p class="empty-history">作業の内訳はまだありません。</p>'}`
+    ? `<div class="phase-detail-heading"><h3>${e(phase.name)}の作業</h3>${work.total ? `<span class="phase-work-count">${work.completed} / ${work.total} 作業完了</span>` : ''}</div>${phase.items?.length ? renderWork(workForPhase(run, selectedPhase)) : '<p class="empty-history">作業の内訳はまだありません。</p>'}`
     : '<p class="empty-history">実行計画の登録を待っています。</p>');
 }
 function renderAgents() {

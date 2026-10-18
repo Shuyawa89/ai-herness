@@ -45,6 +45,7 @@
       "role": "Search API",
       "status": "running",
       "current": "Implementing result ordering",
+      "startedAt": "2026-10-16T01:10:00Z",
       "parentId": "coordinator",
       "launchMethod": "subagent"
     },
@@ -54,6 +55,7 @@
       "role": "Search interface",
       "status": "running",
       "current": "Building the search form",
+      "startedAt": "2026-10-16T01:14:00Z",
       "launchMethod": "command"
     }
   ],

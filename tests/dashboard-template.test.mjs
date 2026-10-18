@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeProgress, agentHealth, elapsed, duration, eventsFor, planCounts } from '../skills/task-dashboard/assets/state.mjs';
+import { normalizeProgress, agentHealth, elapsed, duration, eventsFor, planCounts, phaseState, phaseCounts } from '../skills/task-dashboard/assets/state.mjs';
 import { escapeHtml } from '../skills/task-dashboard/assets/format.mjs';
 
 test('a minimal file has no harness, model or timing requirements',()=>{
@@ -40,4 +40,23 @@ test('untrusted task and history text remains encoded',()=>{
 test('timestamps outside the Date range reject before rendering',()=>{
  assert.throws(()=>normalizeProgress({title:'作業',startedAt:1e20}));
  assert.throws(()=>normalizeProgress({title:'作業',events:[{title:'Bad date',at:-1e20}]}));
+});
+
+
+test('phase counts match tab states rather than nested work totals or the current index',()=>{
+ const run=normalizeProgress({title:'Task',status:'completed',phase:2,phases:[
+  {name:'Design',items:[{name:'Group',children:[{name:'A',status:'completed'},{name:'B',status:'completed'}]}]},
+  {name:'Build',items:[{name:'C',status:'running'}]},
+  {name:'Review',items:[]}
+ ]});
+ assert.deepEqual(phaseCounts(run),{completed:1,total:3});
+ assert.deepEqual(run.phases.map((_,index)=>phaseState(run,index)),['completed','running','unknown']);
+ assert.deepEqual(planCounts(run,0),{completed:2,total:2});
+ assert.deepEqual(planCounts(run,1),{completed:0,total:1});
+});
+test('phase states retain blockers and never infer empty phases completed',()=>{
+ const run=normalizeProgress({title:'Task',phases:[{name:'Blocked',items:[{name:'A',status:'completed'},{name:'B',status:'waiting'}]},{name:'Empty',items:[]}]});
+ assert.equal(phaseState(run,0),'waiting');
+ assert.equal(phaseState(run,1),'unknown');
+ assert.deepEqual(phaseCounts(run),{completed:0,total:2});
 });
