@@ -35,6 +35,28 @@ Participant `launchMethod`, when useful, is `session`, `subagent`, or `command`.
 
 ## Low-effort reporting
 
-The coordinating agent is the sole writer of `progress.json`; other participants report to it rather than overwrite a shared snapshot. Updates happen at meaningful boundaries: starting or finishing work, phase or plan changes, participant changes, blockers, and completion. Periodic prose updates are unnecessary. The coordinating agent writes a complete JSON snapshot to a temporary file in the same folder and atomically replaces `progress.json`, avoiding partial writes. Read/parse failures preserve the last good display and recover on the next valid snapshot.
+Updates happen at meaningful boundaries: starting or finishing work, phase or plan changes, participant changes, blockers, and completion. The viewer's polling and elapsed clock require no model calls. Reporting needs only a stable ID, state, and short activity; repeated full-file reads, periodic prose, and per-tool reports are unnecessary.
+
+The canonical skill directory contains `scripts/update_progress.py`, a small Python standard-library file updater for macOS/Linux. It merges changes under a shared file lock and atomically replaces the JSON, preserving other participants. It is not an agent launcher or extension. After initializing the actual task's JSON, all concurrent writers, including the coordinator, use this helper. Direct whole-file replacements while children report would lose their updates.
+
+The agent substitutes actual absolute paths in these examples; the user need not run them:
+
+```sh
+python3 /absolute/skill/scripts/update_progress.py /absolute/dashboard/progress.json task --patch '{"status":"running"}'
+python3 /absolute/skill/scripts/update_progress.py /absolute/dashboard/progress.json agent main --name 'Coordinator' --status running --launch-method session --current 'Planning implementation'
+python3 /absolute/skill/scripts/update_progress.py /absolute/dashboard/progress.json agent backend --name 'Backend' --parent-id main --launch-method subagent --status running --current 'Implementing API'
+python3 /absolute/skill/scripts/update_progress.py /absolute/dashboard/progress.json agent backend --status running --current 'Checking validation' --event 'API implementation ready for tests'
+python3 /absolute/skill/scripts/update_progress.py /absolute/dashboard/progress.json agent backend --status completed --current 'API checks passed'
+```
+
+The coordinator registers each child **before** the dispatch tool call, since that call may block until all children finish. Every child prompt contains the same short reporting handoff with actual paths and stable IDs:
+
+> Dashboard: file `<absolute progress.json>`, helper `<absolute update_progress.py>`, your ID `<id>`, parent `<parent-id>`. Report meaningful activity with `python3 <helper> <file> agent <id> --status running --current '<short activity>'`; add `--event '<milestone>'` when useful. Report `completed`, `failed`, or `waiting` with the result or blocker. Before delegating, register each child with its unique ID/name, your own ID as its `--parent-id`, launch method and running state, then pass this same handoff to it. Do not overwrite the full JSON.
+
+All paths and arguments are shell-quoted for the actual environment. Names, roles, models, and launch methods are recorded when known. The coordinator finalizes each child immediately when its result returns, including failures; a read-only child receives no write requirement and has only parent-reported start/end, without intermediate updates. Nested delegation follows the same rule. Existing sessions need this handoff explicitly; they do not inherit it by discovery.
+
+The helper records start time on the first `running` report and end time on a terminal report, preserving existing known times. A fresh `running` report after a terminal state starts a new interval. These are recorded work/delegation boundaries, not exact subprocess timing. Initialize new task/main timing before work and child timing before dispatch; never invent historical starts for old reports. A running indicator shows reported state, not a heartbeat or proof the process is alive. Reduced-motion users see a static indicator.
+
+Task and plan changes use `task --patch '<JSON object>'` (for example `phase` and `phases` together), so concurrent participant updates survive. This patch cannot replace `agents` or `events`. Phase counts reflect completed phase tabs; the selected phase separately counts its leaf work items. Empty or unreported phase work never implies completion merely because the current phase advanced.
 
 Reported state reflects known work: `waiting` includes its reason in the current activity or history; successful tools and a finished turn do not automatically complete the task. Completion follows the actual acceptance requirements. A final snapshot includes results and any limitations; the dashboard never substitutes for user acceptance or verification evidence.

@@ -78,15 +78,27 @@ export function workForPhase(run, index) {
   const visit = item => ({ ...item, status: item.status ?? 'pending', ...(item.children ? { children: item.children.map(visit) } : {}) });
   return (run.phases[index]?.items ?? []).map(visit);
 }
-export function planCounts(run) {
+export function planCounts(run, phaseIndex = null) {
   let completed = 0, total = 0;
   const count = item => {
     if (item.children?.length) { item.children.forEach(count); return; }
     total++;
     if (item.status === 'completed') completed++;
   };
-  run.phases.forEach((_, index) => workForPhase(run, index).forEach(count));
+  const indices = phaseIndex == null ? run.phases.map((_, index) => index) : [phaseIndex];
+  indices.forEach(index => workForPhase(run, index).forEach(count));
   return { completed, total };
+}
+export function phaseState(run, index) {
+  const leaves = [];
+  const visit = item => item.children?.length ? item.children.forEach(visit) : leaves.push(item.status);
+  workForPhase(run, index).forEach(visit);
+  if (!leaves.length) return 'unknown';
+  if (leaves.every(status => status === 'completed')) return 'completed';
+  return ['failed', 'waiting', 'running', 'pending'].find(status => leaves.includes(status)) ?? 'unknown';
+}
+export function phaseCounts(run) {
+  return { completed: run.phases.filter((_, index) => phaseState(run, index) === 'completed').length, total: run.phases.length };
 }
 export function eventsFor(run, agentId, limit = 30) {
   return run.events.filter(event => agentId == null || event.agentId === agentId)
