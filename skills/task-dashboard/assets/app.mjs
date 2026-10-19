@@ -1,4 +1,4 @@
-import { normalizeProgress, agentHealth, taskHealth, workForPhase, planCounts, phaseCounts, phaseState, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth } from './state.mjs';
+import { normalizeProgress, normalizeTaskIndex, initialTaskId, createTaskSelection, agentHealth, taskHealth, workForPhase, planCounts, phaseCounts, phaseState, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth } from './state.mjs';
 import { escapeHtml as e, timeOf } from './format.mjs';
 
 const $ = id => document.getElementById(id);
@@ -8,7 +8,22 @@ let selectedPhase = null;
 let filter = 'all';
 let connected = false;
 let hasConnected = false;
-let requestActive = false;
+const shared = document.documentElement.dataset.dashboardMode === 'shared';
+let tasks = [], selectedTask = null;
+let firstIndex = true;
+const selection = createTaskSelection();
+let selectionToken = selection.select(null);
+let pollTimer = null, activeRequest = null;
+const checkoutLabels = { primary: '通常の作業場所', worktree: 'worktree', 'not-git': 'Git管理外', unavailable: 'Git情報を取得できません' };
+function workspaceCompact(workspace) {
+  if (!workspace) return '';
+  const location = workspace.branch || (workspace.commit ? `detached HEAD · ${workspace.commit}` : checkoutLabels[workspace.checkoutKind]);
+  return `<span class="workspace-compact"><span aria-hidden="true">${workspace.checkoutKind === 'worktree' ? '⑂' : '⎇'}</span><span>${e(location)}</span>${workspace.checkoutKind === 'worktree' ? '<span class="checkout-tag">worktree</span>' : ''}</span>`;
+}
+function workspaceDetails(workspace) {
+  if (!workspace) return '<p class="workspace-unknown">作業場所は未報告です。</p>';
+  return `<dl class="workspace-details"><div><dt>作業ディレクトリ</dt><dd>${e(workspace.cwd)}</dd></div>${workspace.repoRoot ? `<div><dt>リポジトリ</dt><dd>${e(workspace.repoRoot)}</dd></div>` : ''}<div><dt>ブランチ</dt><dd>${e(workspace.branch || (workspace.commit ? `detached HEAD · ${workspace.commit}` : '未取得'))}</dd></div><div><dt>作業場所の種類</dt><dd>${e(checkoutLabels[workspace.checkoutKind])}</dd></div></dl>`;
+}
 const clock = () => Date.now();
 const durationTag = entity => `<span data-status="${e(entity.status)}" data-start="${e(timestamp(entity.startedAt))}"${entity.endedAt == null ? '' : ` data-end="${e(timestamp(entity.endedAt))}"`}></span>`;
 const badge = (label, tone) => `<span class="status ${e(tone)}"><span class="tiny-dot" aria-hidden="true"></span>${e(label)}</span>`;
@@ -36,10 +51,41 @@ function updateConnection(ok) {
   if (ok && hasConnected && changed) $('announcement').textContent = '進捗データの読み込みが復旧しました。';
   if (ok) hasConnected = true;
 }
+function renderTaskList() {
+  if (!shared) return;
+  replace('task-list', tasks.length ? tasks.map(task => {
+    const health = task.attention && !['completed', 'failed', 'waiting'].includes(task.status)
+      ? { label: '確認が必要', tone: task.attention === 'failed' ? 'danger' : 'warning' }
+      : agentHealth(task);
+    return `<button id="task-${e(task.id)}" class="task-link" type="button" data-task="${e(task.id)}" aria-current="${task.id === selectedTask ? 'page' : 'false'}"><span class="task-link-title">${e(task.title)}</span><span class="task-link-meta"><span class="task-state ${e(health.tone)}">${e(health.label)}</span><span>${durationTag(task)}</span></span>${task.unavailable ? '<span class="task-unavailable">進捗を読み込めません</span>' : ''}</button>`;
+  }).join('') : '<p class="task-list-empty">登録されたタスクはありません。</p>');
+  updateClock();
+}
+function showEmpty(message) {
+  $('task-content').hidden = true;
+  replace('overview', `<div class="dashboard-empty"><h1>Taskroom</h1><p>${e(message)}</p></div>`);
+  $('breadcrumb-run').textContent = 'タスク一覧';
+  document.title = 'Taskroom — タスク一覧';
+}
+function selectTask(id) {
+  if (id === selectedTask) return;
+  selectedTask = id;
+  selectionToken = selection.select(id);
+  clearTimeout(pollTimer);
+  activeRequest?.abort(); activeRequest = null;
+  run = null; selectedAgent = null; selectedPhase = null; filter = 'all';
+  connected = false; hasConnected = false;
+  $('activity-filter').value = filter;
+  $('connection-notice').hidden = true;
+  showEmpty(id ? 'タスクを読み込んでいます…' : 'タスクを登録すると、ここに進捗が表示されます。');
+  renderTaskList();
+  if (id) poll();
+}
 function renderOverview() {
   const health = taskHealth(run);
   replace('overview', `
     <div class="task-heading"><div><h1>${e(run.title)}</h1>${run.summary ? `<p class="task-subtitle">${e(run.summary)}</p>` : ''}</div>${badge(health.label, health.tone)}</div>
+    ${run.workspace ? `<div class="task-workspace">${workspaceCompact(run.workspace)}<span class="task-cwd">${e(run.workspace.cwd)}</span></div>` : ''}
     <div class="run-summary"><div class="summary-item">経過時間<strong>${durationTag(run)}</strong></div><div class="summary-item">エージェント<strong>${run.agents.length}</strong></div></div>
     ${health.title ? `<div class="health-banner ${e(health.tone)}"><span class="health-symbol" aria-hidden="true">!</span><div><strong>${e(health.title)}</strong><p>${e(health.description)}</p></div>${health.agentId ? `<button id="inspect-alert" data-agent="${e(health.agentId)}" type="button">担当を確認</button>` : ''}</div>` : ''}`);
   $('start-time').textContent = Number.isFinite(timestamp(run.startedAt)) ? timeOf(timestamp(run.startedAt)) : '—';
@@ -76,7 +122,7 @@ function renderAgents() {
   $('agent-count').textContent = run.agents.length;
   replace('agent-list', run.agents.length ? run.agents.map(agent => {
     const depth = participantDepth(agent, run.agents);
-    return `<button id="agent-${e(agent.id)}" type="button" class="agent-row ${depth ? 'child' : ''}" data-depth="${depth}" data-agent="${e(agent.id)}" aria-pressed="${agent.id === selectedAgent}" aria-controls="inspector"><div class="agent-top"><span class="avatar ${agent.launchMethod === 'session' ? 'manager' : ''}" aria-hidden="true">${e(agent.initials || agent.name.slice(0, 1))}</span><div><div class="agent-name">${e(agent.name)}</div><div class="agent-role">${agent.role !== agent.name ? e(agent.role) : ''}${agent.launchMethod === 'command' ? '<span class="launch-label">コマンド起動</span>' : ''}</div></div>${executionBadge(agent)}</div><div class="agent-model"><span class="model-symbol" aria-hidden="true">◇</span>${e(agent.model || 'モデル未報告')}<span class="agent-age">経過 ${durationTag(agent)}</span></div>${agent.current || agent.tool ? `<div class="agent-current">${e(agent.current || agent.tool)}</div>` : ''}</button>`;
+    return `<button id="agent-${e(agent.id)}" type="button" class="agent-row ${depth ? 'child' : ''}" data-depth="${depth}" data-agent="${e(agent.id)}" aria-pressed="${agent.id === selectedAgent}" aria-controls="inspector"><div class="agent-top"><span class="avatar ${agent.launchMethod === 'session' ? 'manager' : ''}" aria-hidden="true">${e(agent.initials || agent.name.slice(0, 1))}</span><div><div class="agent-name">${e(agent.name)}</div><div class="agent-role">${agent.role !== agent.name ? e(agent.role) : ''}${agent.launchMethod === 'command' ? '<span class="launch-label">コマンド起動</span>' : ''}</div></div>${executionBadge(agent)}</div><div class="agent-model"><span class="model-symbol" aria-hidden="true">◇</span>${e(agent.model || 'モデル未報告')}<span class="agent-age">経過 ${durationTag(agent)}</span></div>${workspaceCompact(agent.workspace)}${agent.current || agent.tool ? `<div class="agent-current">${e(agent.current || agent.tool)}</div>` : ''}</button>`;
   }).join('') : '<p class="empty-history">担当はまだ登録されていません。</p>');
 }
 function eventTime(event) {
@@ -93,6 +139,7 @@ function renderInspector() {
   const history = eventsFor(run, agent.id, 12);
   replace('inspector', `<div class="inspector-header"><span class="avatar ${agent.launchMethod === 'session' ? 'manager' : ''}" aria-hidden="true">${e(agent.initials || agent.name.slice(0, 1))}</span><div><h2 id="inspector-title" tabindex="-1">${e(agent.name)}</h2>${agent.role && agent.role !== agent.name ? `<p>${e(agent.role)}</p>` : ''}</div>${executionBadge(agent)}</div>
     <dl class="inspector-meta"><div><dt>モデル</dt><dd>${e(agent.model || '未報告')}</dd></div><div><dt>経過時間</dt><dd>${durationTag(agent)}</dd></div><div><dt>起動方法</dt><dd>${e(launchLabels[agent.launchMethod] || '未報告')}</dd></div></dl>
+    ${workspaceDetails(agent.workspace)}
     <div class="work-label">${agent.endedAt != null || ['completed', 'failed'].includes(agent.status) ? '最終報告' : '現在の処理'}</div><p class="current-work">${e(agent.current || agent.tool || '処理の報告を待っています。')}</p>
     ${health.reason ? `<p class="agent-issue ${e(health.tone)}">${e(health.reason)}</p>` : ''}
     <div class="history-heading"><h3>このエージェントの履歴</h3><span>直近 ${history.length} 件</span></div><ol class="agent-history">${history.map(event => `<li>${eventTime(event)}<div class="history-item"><strong>${e(event.title)}</strong>${event.detail ? `<p>${e(event.detail)}</p>` : ''}</div></li>`).join('')}</ol>
@@ -109,6 +156,7 @@ function renderActivity() {
 }
 function renderAll() {
   if (!run) return;
+  $('task-content').hidden = false;
   renderOverview(); renderPhases(); renderAgents(); renderInspector(); renderActivity(); updateClock();
 }
 function updateClock() {
@@ -128,18 +176,43 @@ function receive(next) {
   renderAll();
 }
 async function poll() {
-  if (requestActive) return;
-  requestActive = true;
+  if (shared && !selectedTask) return;
+  const token = selectionToken;
+  const controller = new AbortController();
+  activeRequest = controller;
+  const timeout = setTimeout(() => controller.abort(), 3500);
   try {
-    const response = await fetch('./progress.json', { cache: 'no-store', signal: AbortSignal.timeout(3500) });
+    const url = shared ? `./tasks/${selectedTask}/progress.json` : './progress.json';
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
     if (!response.ok) throw new Error('Snapshot unavailable');
-    receive(await response.json());
+    const next = await response.json();
+    if (!selection.isCurrent(token)) return;
+    receive(next);
   } catch {
-    updateConnection(false);
+    if (selection.isCurrent(token)) updateConnection(false);
   } finally {
-    requestActive = false;
-    setTimeout(poll, 1000);
+    clearTimeout(timeout);
+    if (selection.isCurrent(token)) {
+      activeRequest = null;
+      pollTimer = setTimeout(poll, 1000);
+    }
   }
+}
+async function pollIndex() {
+  try {
+    const response = await fetch('./api/tasks', { cache: 'no-store', signal: AbortSignal.timeout(3500) });
+    if (!response.ok) throw new Error('Task list unavailable');
+    const next = normalizeTaskIndex(await response.json());
+    tasks = next;
+    $('index-notice').hidden = true;
+    if (!tasks.some(task => task.id === selectedTask)) selectTask(firstIndex ? initialTaskId(tasks, window.location.search) : tasks[0]?.id ?? null);
+    firstIndex = false;
+    if (!tasks.length) showEmpty('タスクを登録すると、ここに進捗が表示されます。');
+    renderTaskList();
+  } catch {
+    $('index-notice').textContent = 'タスク一覧を取得できません。';
+    $('index-notice').hidden = false;
+  } finally { setTimeout(pollIndex, 5000); }
 }
 $('activity-filter').addEventListener('change', event => { filter = event.target.value; if (run) renderActivity(); });
 $('main').addEventListener('click', event => {
@@ -156,8 +229,15 @@ $('main').addEventListener('click', event => {
   const phaseButton = event.target.closest('[data-phase]');
   if (phaseButton) { selectedPhase = Number(phaseButton.dataset.phase); renderPhases(); }
 });
-setInterval(() => {
-  if (!run) return;
-  updateClock();
-}, 1000);
-poll();
+$('task-navigation').addEventListener('click', event => {
+  const button = event.target.closest('[data-task]');
+  if (button && tasks.some(task => task.id === button.dataset.task)) selectTask(button.dataset.task);
+});
+setInterval(updateClock, 1000);
+if (shared) {
+  $('task-navigation').hidden = false;
+  $('standalone-information').hidden = true;
+  $('standalone-meta').hidden = true;
+  showEmpty('タスク一覧を読み込んでいます…');
+  pollIndex();
+} else poll();

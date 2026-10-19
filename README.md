@@ -134,10 +134,12 @@ bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証�
 
 ## タスクのライブダッシュボード
 
-`skills/task-dashboard/` は、一つの長時間タスクの計画・担当・現在の作業・モデル・経過時間・履歴を表示する共通テンプレートです。普段どおり開始した Pi、Claude Code、Codex などのセッションで[スキル](skills/task-dashboard/SKILL.md)を読み込み、そのまま利用できます。専用の起動コマンドや CLI 拡張は不要です。
+`skills/task-dashboard/` は、普段の Pi・Claude Code・Codex セッションから利用する共通ダッシュボードです。[スキル](skills/task-dashboard/SKILL.md)を読み込むと、AI がタスクを登録してローカル URL を提供します。独立した複数タスクを左の一覧で切り替え、計画・担当・モデル・経過時間・履歴・作業ディレクトリ・ブランチ・worktree 情報を確認できます。専用のエージェント起動コマンドや拡張は不要です。
 
-AI がテンプレートを対象プロジェクトの専用 `.temp-local/` フォルダーへ配置し、実際の進捗を `progress.json` に記録して、通常の静的サーバーでローカル URL を提供します。画面は JSON を定期的に読み込みます。計画の段階数や作業の階層は自由で、サブエージェントもコマンド起動の別エージェントも同じ一覧に表示できます。
+共通ツールは Go の標準ライブラリで実装され、ビルド後は Go・Python の実行環境を必要としません。ビルドは `bash skills/task-dashboard/scripts/build.sh`。既存の Go、または mise の Go 1.27.2 を利用し、既定では `~/.local/state/task-dashboard/bin/task-dashboard` に出力します。ビルド済みファイルは OS・CPU ごとに必要です。現在のプロセス管理・ロックは macOS/Linux 対応です。
 
-更新は節目や問題発生時に行います。調整役は子を起動前に登録し、書き込み可能な子も小さな共通ヘルパーで自分の担当情報を更新します。同時更新はロックとファイル置換で保護されます。ヘルパーは Python 標準ライブラリのみで、macOS/Linux に対応します。開始・終了時刻は報告時に記録し、モデルや過去の時刻は判明している場合だけ記録します。厳密な稼働監視や自動検出は行わず、報告が止まっても停止とは判定しません。画面には最後の報告が残ります。共有前に [サンプルデータ](skills/task-dashboard/assets/progress.example.json)を実際のタスク情報に置き換えます。`task-dashboard` は bootstrap の共有スキル配布対象です。通常のセットアップで Pi・Claude Code・Codex のスキル配置先へリンクされます。
+進捗は `~/.local/state/task-dashboard/`（`--root` で変更可能）にタスク別で保存されます。`task-dashboard server start` はセッションから独立したローカルサーバーを起動し、`server status`・`server stop` で確認・停止できます。OS の自動起動設定は追加しません。サーバーを止めても進捗ファイルは残り、通常の更新処理が勝手に起動し直すことはありません。停止すると全タスクの画面配信が止まります。
 
-検証: `node --test tests/dashboard-template.test.mjs`、`python3 tests/dashboard-reporting_test.py`。
+調整役は子を起動前に登録し、書き込み可能な子も短いコマンドで自分の情報を更新します。ロックとファイル置換が同時更新を保護し、作業場所を渡すと Git 情報を取得します。ブラウザーはタスク一覧を低頻度、選択中の詳細を約1秒ごとに読み込み、モデルを呼び出しません。表示は報告された進捗であり、厳密な稼働監視ではありません。[サンプルデータ](skills/task-dashboard/assets/progress.example.json)は架空の内容です。従来の単一 JSON・静的サーバー方式と Python 更新ヘルパーも利用できます。
+
+`task-dashboard` は bootstrap の共有スキル配布対象です。通常のセットアップで Pi・Claude Code・Codex のスキル配置先へリンクされます。検証: `node --test tests/dashboard-template.test.mjs tests/dashboard-multi.test.mjs`、`python3 tests/dashboard-reporting_test.py`、`cd skills/task-dashboard && mise exec go@1.27.2 -- go test ./...`。

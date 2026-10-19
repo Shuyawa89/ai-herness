@@ -60,3 +60,53 @@ test('phase states retain blockers and never infer empty phases completed',()=>{
  assert.equal(phaseState(run,1),'unknown');
  assert.deepEqual(phaseCounts(run),{completed:0,total:2});
 });
+
+test('workspace metadata preserves observed facts without confusing branch and checkout',()=>{
+ const workspace={cwd:'/tmp/work <one>',repoRoot:'/tmp/work <one>',branch:'main',checkoutKind:'worktree',observedAt:1000};
+ const run=normalizeProgress({title:'Task',workspace,agents:[{id:'a',name:'A',workspace:{cwd:'/tmp/plain',checkoutKind:'not-git'}}]});
+ assert.equal(run.workspace.checkoutKind,'worktree');
+ assert.equal(run.workspace.branch,'main');
+ assert.equal(run.agents[0].workspace.branch,null);
+ assert.equal(normalizeProgress({title:'Legacy'}).workspace,null);
+ for(const bad of [{cwd:4,checkoutKind:'primary'},{cwd:'/tmp',checkoutKind:'main'},{cwd:'/tmp',checkoutKind:'primary',observedAt:'invalid'}]) assert.throws(()=>normalizeProgress({title:'T',workspace:bad}));
+});
+test('shared task summaries reject unsafe identifiers and retain independent timing',async()=>{
+ const {normalizeTaskIndex}=await import('../skills/task-dashboard/assets/state.mjs');
+ const tasks=normalizeTaskIndex({tasks:[{id:'a',title:'A',status:'running',startedAt:1000},{id:'b',title:'B',status:'completed',startedAt:1000,endedAt:3000,unavailable:true}]});
+ assert.equal(elapsed(tasks[1],9999),2000);
+ assert.equal(tasks[1].unavailable,true);
+ assert.throws(()=>normalizeTaskIndex({tasks:[{id:'../escape',title:'Bad'}]}));
+ assert.throws(()=>normalizeTaskIndex({tasks:[{id:'a',title:'A'},{id:'a',title:'Duplicate'}]}));
+ assert.throws(()=>normalizeTaskIndex({tasks:[{id:'a',title:'A',agentCount:-1}]}));
+});
+test('task switching invalidates in-flight snapshots even after switching back',async()=>{
+ const {createTaskSelection}=await import('../skills/task-dashboard/assets/state.mjs');
+ const selection=createTaskSelection();
+ const first=selection.select('a');
+ assert.equal(selection.isCurrent(first),true);
+ selection.select('b');
+ assert.equal(selection.isCurrent(first),false);
+ const next=selection.select('a');
+ assert.equal(selection.isCurrent(first),false);
+ assert.equal(selection.isCurrent(next),true);
+});
+
+test('shared attention preserves root execution status and rejects unknown reasons',async()=>{
+ const {normalizeTaskIndex}=await import('../skills/task-dashboard/assets/state.mjs');
+ const tasks=normalizeTaskIndex({tasks:[{id:'a',title:'A',status:'running',attention:'failed',startedAt:1000},{id:'b',title:'B',status:'running',attention:'waiting'}]});
+ assert.equal(tasks[0].attention,'failed');
+ assert.equal(tasks[0].status,'running');
+ assert.equal(elapsed(tasks[0],4000),3000);
+ assert.equal(tasks[1].attention,'waiting');
+ assert.throws(()=>normalizeTaskIndex({tasks:[{id:'a',title:'A',attention:'running'}]}));
+});
+
+test('initial task links select only a registered safe identifier',async()=>{
+ const {initialTaskId}=await import('../skills/task-dashboard/assets/state.mjs');
+ const tasks=[{id:'a'},{id:'b'}];
+ assert.equal(initialTaskId(tasks,'?task=b'),'b');
+ assert.equal(initialTaskId(tasks,'?task=missing'),'a');
+ assert.equal(initialTaskId(tasks,'?task=../escape'),'a');
+ assert.equal(initialTaskId(tasks,''),'a');
+ assert.equal(initialTaskId([],'?task=b'),null);
+});

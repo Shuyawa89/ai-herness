@@ -12,6 +12,40 @@ function date(value) {
   return value;
 }
 function status(value) { check(value == null || statuses.includes(value)); return value ?? 'unknown'; }
+export function normalizeWorkspace(value) {
+  if (value == null) return null;
+  check(typeof value === 'object' && !Array.isArray(value));
+  const cwd = string(value.cwd, '', 8192); check(cwd.trim().length > 0);
+  check(['primary', 'worktree', 'not-git', 'unavailable'].includes(value.checkoutKind));
+  return { cwd, repoRoot: value.repoRoot == null ? null : string(value.repoRoot, '', 8192),
+    branch: value.branch == null ? null : string(value.branch), commit: value.commit == null ? null : string(value.commit),
+    checkoutKind: value.checkoutKind, observedAt: date(value.observedAt) };
+}
+export function normalizeTaskIndex(input) {
+  check(input && Array.isArray(input.tasks) && input.tasks.length <= 2000);
+  const ids = new Set();
+  return input.tasks.map(task => {
+    check(task && typeof task.id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(task.id) && !ids.has(task.id));
+    ids.add(task.id);
+    const title = string(task.title); check(title.trim().length > 0);
+    check(task.agentCount == null || (Number.isInteger(task.agentCount) && task.agentCount >= 0));
+    check(task.unavailable == null || typeof task.unavailable === 'boolean');
+    check(task.attention == null || ['failed', 'waiting'].includes(task.attention));
+    return { id: task.id, title, status: status(task.status), startedAt: date(task.startedAt), endedAt: date(task.endedAt),
+      workspace: normalizeWorkspace(task.workspace), agentCount: task.agentCount ?? null, attention: task.attention ?? null, unavailable: task.unavailable ?? false };
+  });
+}
+export function initialTaskId(tasks, search) {
+  const requested = new URLSearchParams(search).get('task');
+  return tasks.find(task => task.id === requested)?.id ?? tasks[0]?.id ?? null;
+}
+export function createTaskSelection() {
+  let current = null, revision = 0;
+  return {
+    select(id) { current = id; return { id, revision: ++revision }; },
+    isCurrent(token) { return token.id === current && token.revision === revision; }
+  };
+}
 export function normalizeProgress(input) {
   check(input && typeof input === 'object' && !Array.isArray(input));
   const title = string(input.title); check(title.trim().length > 0);
@@ -33,7 +67,7 @@ export function normalizeProgress(input) {
     check(agent.launchMethod == null || ['session', 'command', 'subagent'].includes(agent.launchMethod));
     return { id: agent.id, name, role: string(agent.role), initials: name.slice(0, 1), parentId: agent.parentId ?? null, launchMethod: agent.launchMethod ?? null,
       model: agent.model == null ? null : string(agent.model), status: status(agent.status), current: string(agent.current), reason: string(agent.reason),
-      startedAt: date(agent.startedAt), endedAt: date(agent.endedAt), deliverables: [] };
+      workspace: normalizeWorkspace(agent.workspace), startedAt: date(agent.startedAt), endedAt: date(agent.endedAt), deliverables: [] };
   });
   const normalizedPhases = phases.map(phase => {
     check(phase && Array.isArray(phase.items)); const name = string(phase.name); check(name.length > 0);
@@ -42,7 +76,7 @@ export function normalizeProgress(input) {
   const phase = input.phase ?? 0;
   check(Number.isInteger(phase) && phase >= 0 && (phases.length ? phase < phases.length : phase === 0));
   return { id: string(input.id), title, summary: string(input.summary), status: status(input.status), reason: string(input.reason),
-    startedAt: date(input.startedAt), endedAt: date(input.endedAt), phase, phases: normalizedPhases, agents: normalizedAgents,
+    workspace: normalizeWorkspace(input.workspace), startedAt: date(input.startedAt), endedAt: date(input.endedAt), phase, phases: normalizedPhases, agents: normalizedAgents,
     events: events.map((event, index) => {
       check(event && (event.agentId == null || typeof event.agentId === 'string'));
       const title = string(event.title); check(title.length > 0);
