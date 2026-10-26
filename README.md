@@ -140,6 +140,6 @@ bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証�
 
 進捗は `~/.local/state/task-dashboard/`（`--root` で変更可能）にタスク別で保存されます。`task-dashboard server start` はセッションから独立したローカルサーバーを起動し、`server status`・`server stop` で確認・停止できます。OS の自動起動設定は追加しません。サーバーを止めても進捗ファイルは残り、通常の更新処理が勝手に起動し直すことはありません。停止すると全タスクの画面配信が止まります。
 
-調整役は子を起動前に登録し、書き込み可能な子も短いコマンドで自分の情報を更新します。ロックとファイル置換が同時更新を保護し、作業場所を渡すと Git 情報を取得します。ブラウザーはタスク一覧を低頻度、選択中の詳細を約1秒ごとに読み込み、モデルを呼び出しません。表示は報告された進捗であり、厳密な稼働監視ではありません。[サンプルデータ](skills/task-dashboard/assets/progress.example.json)は架空の内容です。従来の単一 JSON・静的サーバー方式と Python 更新ヘルパーも利用できます。
+調整役は子を起動前に登録し、書き込み可能な子も短いコマンドで自分の情報を更新します。ロックとファイル置換が同時更新を保護し、作業場所を渡すと Git 情報を取得します。ブラウザーはタスク一覧を低頻度、選択中の詳細を約1秒ごとに読み込み、モデルを呼び出しません。最終回答の直前に `finish` でタスクと調整役をまとめて更新し、結果報告は完了、質問・承認待ちは確認待ちとして記録します。一覧は「すべて／実行中／確認が必要／完了済み」で絞り込めます。表示は報告された進捗であり、終了コマンドの呼び忘れや強制終了を自動検知するものではありません。[サンプルデータ](skills/task-dashboard/assets/progress.example.json)は架空の内容です。従来の単一 JSON・静的サーバー方式と Python 更新ヘルパーも利用できます。
 
 `task-dashboard` は bootstrap の共有スキル配布対象です。通常のセットアップで Pi・Claude Code・Codex のスキル配置先へリンクされます。検証: `node --test tests/dashboard-template.test.mjs tests/dashboard-multi.test.mjs`、`python3 tests/dashboard-reporting_test.py`、`cd skills/task-dashboard && mise exec go@1.27.2 -- go test ./...`。

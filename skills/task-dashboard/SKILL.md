@@ -41,13 +41,34 @@ The task patch preserves participants and events. Pass `--cwd` when the known wo
 
 The coordinator registers each child **before** dispatch, because a synchronous subagent call may block the parent until children finish. Write-capable children receive this short handoff with actual paths and IDs:
 
-> Dashboard: binary `<absolute binary>`, report `<absolute progress.json>`, your ID `<id>`. At meaningful boundaries, run `<binary> update <report> agent <id> --status running --current '<short activity>'`; optionally add `--event '<milestone>'`. Report completed/failed/waiting with the result or blocker. Before delegating, register the new child with a unique ID/name, your own ID as its --parent-id, known --cwd, launch method and running state; pass this handoff along. Do not overwrite the full JSON.
+> Dashboard: binary `<absolute binary>`, report `<absolute progress.json>`, your ID `<id>`. At meaningful boundaries, run `<binary> update <report> agent <id> --status running --current '<short activity>'`; optionally add `--event '<milestone>'`. Immediately before returning your result, update your own participant to completed/failed/waiting with the result or blocker; the coordinator owns the task-wide finish command. Before delegating, register the new child with a unique ID/name, your own ID as its --parent-id, known --cwd, launch method and running state; pass this handoff along. Do not overwrite the full JSON.
 
-The coordinator finalizes children on result return, including failures. Read-only children have parent-reported dispatch/result boundaries and no intermediate-update guarantee. Already running sessions do not inherit a new handoff automatically. The helper records real reporting start/end times, preserving known times; repeated terminal reports freeze the end, and an explicit new running interval after terminal work restarts timing. Historical missing starts are not invented. Completion reflects acceptance requirements, not merely a finished tool or turn.
+The coordinator finalizes children on result return, including failures. Read-only children have parent-reported dispatch/result boundaries and no intermediate-update guarantee. Already running sessions do not inherit a new handoff automatically. The helper records real reporting start/end times, preserving known times; repeated terminal reports freeze the end, and an explicit new running interval after terminal work restarts timing. Historical missing starts are not invented. The response-ending report below closes the current response; it does not certify product acceptance, successful tests, or the completion of unrelated future work.
+
+## End every response explicitly
+
+Immediately before handing control back to the user, the coordinator calls `finish` for the actual report and its registered participant ID. A normal result report uses `completed`; a question or requested approval uses `waiting` with the reason; an unrecoverable error uses `failed` with the reason. The command updates the task and coordinator together under one file lock, without completing plan items or other participants.
+
+```sh
+/absolute/bin/task-dashboard finish /absolute/progress.json --agent main --status completed --current 'Delivered implementation and verification results'
+/absolute/bin/task-dashboard finish /absolute/progress.json --agent main --status waiting --reason 'Need a decision about scope' --current 'Waiting for the user’s answer'
+/absolute/bin/task-dashboard finish /absolute/progress.json --agent main --status failed --reason 'Required dependency is unavailable' --current 'Cannot continue'
+```
+
+Children are finalized as their results return, before the coordinator finishes. If another participant is still reported running, waiting, or failed, finishing the coordinator normally preserves that participant and leaves the task reflecting the remaining work or attention instead of asserting all work succeeded. Check the command's returned task/agent states. Do not treat a child as completed unless its end is known. Old running reports are never automatically rewritten from age alone.
+
+On the next request in the same task, explicitly reopen both the task and coordinator before work, retaining the report path rather than registering a duplicate:
+
+```sh
+/absolute/bin/task-dashboard update /absolute/progress.json task --patch '{"status":"running","reason":""}'
+/absolute/bin/task-dashboard update /absolute/progress.json agent main --status running --reason '' --current 'Working on the next request'
+```
+
+Repeated terminal finish reports preserve the recorded end time. A subsequent running interval records a new start. There is no harness end-event hook: this boundary update is part of the agent's response workflow. It reduces forgotten final updates but cannot guarantee completion detection after a skipped command, interruption, or crash. The user is not asked to run the finish command for the agent. An already running session needs this updated guidance explicitly.
 
 ## Viewer and compatibility
 
-The browser selects independent tasks in the sidebar; the chosen task retains its plan, agents, models, elapsed times, and filtered histories. Work items can be nested and phase counts are not fixed. A running indicator shows reported execution state, not a heartbeat or proof of liveness. Errors loading a file preserve the last valid report for that task and are distinct from reported task failures.
+The browser selects independent tasks in the sidebar; the chosen task retains its plan, agents, models, elapsed times, and filtered histories. Work items can be nested and phase counts are not fixed. The task-list filter shows all tasks, running tasks, tasks needing attention, or completed tasks. It shares the row-status classification, including child attention and unavailable reports, and does not change the selected detail. A running indicator shows reported execution state, not a heartbeat or proof of liveness. Errors loading a file preserve the last valid report for that task and are distinct from reported task failures.
 
 Read [the JSON contract](references/progress-data.md) when changing phases, importing a report, or writing additional fields. Keep credentials, private prompts, thinking and raw tool output out of all reports. Example data is fictional and must be replaced before presenting an actual task.
 
