@@ -33,4 +33,15 @@ The MIT license text is preserved in `skills/consulting-pptx-skill/LICENSE` and 
 
 The MIT license text is preserved in `LICENSES/ayghri-i-have-adhd-MIT.txt`.
 
+## security-audit
+
+- Source: https://github.com/cloudflare/security-audit-skill
+- Upstream revision: `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8`
+- Installed source record: `skills/security-audit/`
+- License: MIT
+- Copyright: 2025-2026 Cloudflare, Inc.
+- Local changes: none; registered in the harness bootstrap allowlist.
+
+The MIT license text is preserved in `LICENSES/cloudflare-security-audit-skill-MIT.txt`.
+
 The remaining skills were migrated from pre-existing personal configuration. Their upstream provenance was not recorded in the original local setup; review provenance before publishing this repository publicly.

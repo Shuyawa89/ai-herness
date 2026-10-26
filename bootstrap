@@ -411,6 +411,7 @@ SKILL_ALLOWLIST=(
   i-have-adhd
   consulting-pptx-skill
   task-dashboard
+  security-audit
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand
