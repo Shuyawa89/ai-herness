@@ -25,8 +25,15 @@ Explorer -> Planner -> [human approves] -> Worker -> Critic
 Critic -> Promoter (only when useful) -> [human completes]
 ```
 
-The Planner writes `.temp-local/workflow-plan.md` and stops for approval. The
-Worker follows that approved plan. For a substantial Worker task in Pi, the
+Each session keeps one explicitly recorded workspace under
+`.temp-local/sessions/YYYYMMDD-HHMMSS-short-description/`; numeric suffixes resolve
+name collisions. Planning's allocation helper (or Pi's `prewalk_workspace` tool)
+reserves a new directory atomically. Notes and verification artifacts stay there.
+The Planner writes `<session-workspace>/workflow-plan.md` in Japanese and stops
+for approval. Worker and Critic receive that exact path and the workspace;
+restarts and context compaction reuse the session's own recorded path, never the
+latest folder. Existing plans are preserved. The Worker follows the approved
+plan. For a substantial Worker task in Pi, the
 user may run `/prewalk`; the frontier model (first model in the machine-local
 Prewalk config) makes the plan and first source change, then hands the same
 session to the cheaper second model.
