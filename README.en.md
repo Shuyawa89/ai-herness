@@ -118,11 +118,34 @@ pi
 
 Then run `/prewalk` before submitting the task. It resolves the route from the local config; `/prewalk <second>` or `/prewalk <first> <second>` overrides it for one invocation, and `/prewalk off` disarms it.
 
-The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
+The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes its plan and scratch artifacts in the session workspace described below. `.temp-local/` is globally ignored by Git.
 
 `skills/harness-workflow/` captures the article's reusable role split: Explore, Planner, Worker, Critic, and Promoter. Only the Skill allowlist at the top of `bootstrap` is linked into each tool; add a name there to distribute another skill. Canonical sources are used by default, while explicit-only skills use the tool-specific sources described above. The harness ships no environment-specific skills or model choices.
 
 The current request's language selects one role and one Skill; the harness does not force a remembered `/workflow` command vocabulary. Planner approval and final completion remain conversational human gates. For substantial Pi implementation work, run `/prewalk` before the task to use the frontier-to-worker handoff.
+
+## Session workspaces
+
+Plans, notes, and verification artifacts live in a session-specific directory in the target project:
+
+```text
+.temp-local/sessions/
+  20261026-143052-plan-isolation/
+    workflow-plan.md
+    notes.md
+  20261026-143052-plan-isolation-2/
+    workflow-plan.md
+```
+
+Names combine a local-time timestamp with a short English task description. Only collisions receive numeric suffixes such as `-2` and `-3`; no UUID is needed. The agent runs Planning's `scripts/session-workspace.mjs` with `node`, the absolute project directory, and the short description. Atomic directory creation prevents independent sessions choosing the same name from overwriting existing files. No additional packages are required; the helper uses Node.js.
+
+In Pi, the model calls `prewalk_workspace` with the short description to use the same allocator. Pi stores the path in the session history, preserving it across rearming `/prewalk`, compaction, and resume. Independent new and forked sessions allocate separate directories. The frontier guard does not accept another session's plan as permission to edit source or allow writes to another session's scratch files.
+
+Ordinary skills retain the absolute directory in the conversation and handoff context. Resume with an explicit reference, for example: "Continue the approved plan at `.temp-local/sessions/20261026-143052-plan-isolation/workflow-plan.md`." Recover a missing path from that session's own records rather than choosing the latest directory. A new task in the same session preserves earlier approved plans before writing a fresh plan.
+
+Plan headings, explanatory prose, and diagram labels use Japanese; paths, commands, and identifiers retain their original form. Existing artifacts such as `.temp-local/workflow-plan.md` are not automatically moved or deleted. This isolates scratch artifacts; concurrent source-code edits still need separate worktrees or another isolation mechanism.
+
+Checks: `node --test tests/session-workspace_test.mjs`, `node tests/prewalk_test.mjs`, `node --test tests/prewalk-adapter_test.mjs`, and `bash tests/bootstrap_test.sh`.
 
 ## Existing machine-specific configuration
 

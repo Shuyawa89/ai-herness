@@ -1,6 +1,7 @@
-export const PREWALK_PLAN_PATH = ".temp-local/workflow-plan.md"
+import { readlinkSync, realpathSync } from "node:fs"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
-const FRONTIER_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"])
+const FRONTIER_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write", "prewalk_workspace"])
 
 function validateModelRef(value) {
   const [provider, ...modelParts] = value.split("/")
@@ -10,21 +11,31 @@ function validateModelRef(value) {
   return value
 }
 
-function splitPath(path) {
-  const parts = path.replaceAll("\\", "/").split("/")
-  if (parts[0] === "") return []
-
-  const normalized = []
-  for (const part of parts) {
-    if (!part || part === ".") continue
-    if (part === "..") {
-      if (normalized.length === 0) return []
-      normalized.pop()
-      continue
+function canonicalPath(path, followedLinks = 0) {
+  const absolute = resolve(path)
+  try {
+    return realpathSync(absolute)
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error
+    let target
+    try {
+      target = readlinkSync(absolute)
+    } catch (linkError) {
+      if (linkError.code !== "ENOENT" && linkError.code !== "EINVAL") throw linkError
     }
-    normalized.push(part)
+    if (target !== undefined) {
+      if (followedLinks >= 40) throw new Error("Too many symbolic links in mutation path.")
+      return canonicalPath(resolve(dirname(absolute), target), followedLinks + 1)
+    }
+    const parent = dirname(absolute)
+    if (parent === absolute) throw error
+    return join(canonicalPath(parent, followedLinks), relative(parent, absolute))
   }
-  return normalized
+}
+
+function isWithin(path, directory) {
+  const remainder = relative(directory, path)
+  return remainder === "" || (!isAbsolute(remainder) && remainder !== ".." && !remainder.startsWith(`..${sep}`))
 }
 
 export function parsePrewalkConfig(settings) {
@@ -67,20 +78,29 @@ export function parsePrewalkArgs(args, config) {
   return { firstModel: validateModelRef(parts[0]), secondModel: validateModelRef(parts[1]) }
 }
 
-export function isScratchPath(path) {
-  return splitPath(path)[0] === ".temp-local"
+export function isScratchPath(path, projectDirectory = process.cwd()) {
+  const project = canonicalPath(projectDirectory)
+  const absolute = resolve(project, path)
+  const scratch = join(project, ".temp-local")
+  const spelledScratch = resolve(projectDirectory, ".temp-local")
+  const canonical = canonicalPath(absolute)
+  return isWithin(absolute, scratch) || isWithin(absolute, spelledScratch)
+    || isWithin(canonical, canonicalPath(scratch)) || isWithin(canonical, canonicalPath(join(scratch, "sessions")))
 }
 
-export function isPlanPath(path) {
-  const segments = splitPath(path)
-  return segments.at(-2) === ".temp-local" && segments.at(-1) === "workflow-plan.md"
+export function isPlanPath(path, workspaceDirectory, projectDirectory = process.cwd()) {
+  if (!workspaceDirectory) return false
+  return canonicalPath(resolve(projectDirectory, path)) === join(canonicalPath(workspaceDirectory), "workflow-plan.md")
 }
 
 function isMutation(toolName, input) {
   return (toolName === "edit" || toolName === "write") && typeof input.path === "string" && input.path.trim() !== ""
 }
 
-export function createPrewalkState() {
+export function createPrewalkState({ projectDirectory = process.cwd() } = {}) {
+  let projectSpelling = resolve(projectDirectory)
+  let project = canonicalPath(projectDirectory)
+  let workspace
   let currentStage = "idle"
   let config
   let planWritten = false
@@ -89,6 +109,20 @@ export function createPrewalkState() {
   let pendingCodeMutation
 
   return {
+    bindWorkspace(directory, projectDirectory = projectSpelling) {
+      projectSpelling = resolve(projectDirectory)
+      project = canonicalPath(projectDirectory)
+      workspace = directory ? canonicalPath(directory) : undefined
+    },
+
+    workspace() {
+      return workspace
+    },
+
+    planPath() {
+      return workspace ? join(workspace, "workflow-plan.md") : undefined
+    },
+
     arm(nextConfig) {
       currentStage = "frontier"
       config = nextConfig
@@ -125,21 +159,35 @@ export function createPrewalkState() {
       if (!FRONTIER_ALLOWED_TOOLS.has(toolName)) {
         return {
           block: true,
-          reason: "Prewalk frontier pass permits only read, grep, find, ls, edit, and write tools.",
+          reason: "Prewalk frontier pass permits only read, grep, find, ls, edit, write, and prewalk_workspace tools.",
         }
       }
 
       if (!isMutation(toolName, input)) return undefined
 
-      if (isScratchPath(input.path)) {
-        if (isPlanPath(input.path)) pendingPlans.add(toolCallId)
-        return undefined
+      if (!workspace) {
+        return { block: true, reason: "Prewalk requires prewalk_workspace to allocate this session's workspace before any file mutation." }
+      }
+
+      try {
+        const absolute = resolve(project, input.path)
+        const canonical = canonicalPath(absolute)
+        if (isScratchPath(input.path, projectSpelling)) {
+          // Resolve even dangling symlinks so scratch cannot mutate another session's files.
+          if (!isWithin(canonical, workspace)) {
+            return { block: true, reason: `Prewalk scratch writes must remain in this session's workspace (${workspace}).` }
+          }
+          if (isPlanPath(input.path, workspace, project)) pendingPlans.add(toolCallId)
+          return undefined
+        }
+      } catch (error) {
+        return { block: true, reason: `Prewalk could not safely resolve the mutation path: ${error.message}` }
       }
 
       if (!planWritten) {
         return {
           block: true,
-          reason: `Prewalk requires a successful plan file first (${PREWALK_PLAN_PATH}).`,
+          reason: `Prewalk requires a successful plan file first (${this.planPath()}).`,
         }
       }
 

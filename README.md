@@ -119,12 +119,35 @@ pi
 タスクを入力する前に `/prewalk` を実行する。ルートはローカル設定から解決され、`/prewalk <second>` または `/prewalk <first> <second>` で 1 回だけ上書き、`/prewalk off` で解除できる。
 
 
-選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に計画と scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。
+選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は下記のセッション専用フォルダに計画と作業用ファイルを書く。`.temp-local/` は Git のグローバル ignore 対象。
 
 `skills/harness-workflow/` は、記事から再利用できる役割分担（Explore、Planner、Worker、Critic、Promoter）をまとめたもの。配布する Skill は `bootstrap` 冒頭の allowlist のみ。追加したい skill はそこに名前を加える。通常は正本をそのまま配布し、明示呼び出し限定の Skill には上記の tool-specific source を使う。ハーネスは環境固有の skill もモデル選択も Git に含まない。
 
 
 現在の依頼の言葉が役割と Skill を一つ選ぶ。`/workflow` のようなコマンド語彙は強制しない。Planner の承認と完了判断は会話の中で人間が行う gate であり、実装フェーズへ切り替える。
+
+## セッション専用の作業フォルダ
+
+計画・調査メモ・検証結果は、対象プロジェクト内のセッション専用フォルダに保存する。
+
+```text
+.temp-local/sessions/
+  20261026-143052-plan-isolation/
+    workflow-plan.md
+    notes.md
+  20261026-143052-plan-isolation-2/
+    workflow-plan.md
+```
+
+名前はローカル時刻のタイムスタンプと、作業内容を表す短い英語の名前を組み合わせる。同名の場合だけ `-2`、`-3` と連番を付ける。UUIDは使わない。エージェントが Planning スキルの `scripts/session-workspace.mjs` を `node` で実行し、プロジェクトの絶対パスと短い作業名を渡す。フォルダ作成は排他的に行うため、複数セッションが同時に同じ名前を選んでも既存ファイルを上書きしない。追加パッケージは不要で、Node.js を利用する。
+
+Pi ではモデルが `prewalk_workspace` ツールに短い作業名を渡し、同じ作成処理を利用する。保存先を Pi のセッション履歴に記録するため、再度の `/prewalk`、会話の圧縮、セッション再開でも同じフォルダを使う。独立した新規セッションや fork では別フォルダを作る。最初のモデルの編集制限では、別セッションの計画でソース編集の条件を満たしたり、別セッションの作業用ファイルへ書き込んだりできない。
+
+通常のスキルでは、会話と引き継ぎ情報に保存先の絶対パスを保持する。再開時は「`.temp-local/sessions/20261026-143052-plan-isolation/workflow-plan.md` の承認済み計画を続けて」のように対象を明示する。パスが不明ならそのセッションの記録から復元し、最新フォルダの自動選択はしない。同じセッションの別タスクで新しい計画を書く場合は、以前の承認済み計画を保持する。
+
+計画の見出し・説明・図のラベルは日本語にする。パス・コマンド・識別子は元の表記を維持する。既存の `.temp-local/workflow-plan.md` などは自動移動・削除しない。この仕組みは作業用ファイルの分離であり、ソースコードの同時編集には worktree などによる別の分離が必要。
+
+検証: `node --test tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk-adapter_test.mjs`、`bash tests/bootstrap_test.sh`。
 
 ## 既存のマシン固有設定
 

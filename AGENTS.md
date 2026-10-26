@@ -49,7 +49,7 @@ For other substantial work, identify one current role. Do not combine roles in
 one response.
 
 - **Explorer**: requests to inspect, investigate, or understand. Use the `explore` Skill; report facts and unknowns only.
-- **Planner**: requests for an approach or design. Use the `planning` Skill; write a DAG to `.temp-local/workflow-plan.md` and wait for approval before implementation.
+- **Planner**: requests for an approach or design. Use the `planning` Skill; write a DAG to `<session-workspace>/workflow-plan.md` and wait for approval before implementation.
 - **Worker**: requests to implement or fix an approved task. Use the `worker` Skill. For unfamiliar or substantial work, use the Pi `/prewalk` command so the frontier model establishes the plan and first implementation pattern before the worker model continues.
 - **Critic**: requests to review or verify. Use the `critic` Skill and review from evidence, not intent.
 - **Promoter**: requests to communicate verified work. Use the `promoter` Skill only after a Critic pass.
@@ -59,6 +59,13 @@ example, "Worker で開始します"). When the role changes mid-task, announce 
 switch (for example, "Critic に切り替えます") before acting as the new role.
 
 A new request does not resume an unfinished plan unless the user explicitly refers to its plan file. Human approval is required at the Planner gate and before declaring completion.
+
+## Session Workspace
+
+- Each independent session has one project-local workspace at `.temp-local/sessions/YYYYMMDD-HHMMSS-short-description/`. The short description names the work in lowercase English words separated by hyphens; timestamps use local time. Name collisions receive numeric suffixes such as `-2`; UUIDs are unnecessary.
+- Before the first plan or scratch artifact, atomically allocate the directory with `node <canonical-harness-root>/skills/planning/scripts/session-workspace.mjs <absolute-project-directory> <short-description>`, resolving the harness root from this file's canonical source. Pi's `prewalk_workspace` tool provides the same allocation.
+- Plans, notes, and verification artifacts belong inside that workspace. The returned absolute directory and exact plan path remain in the session context and accompany child-agent and role handoffs. Rearming, resuming, and context compaction preserve that explicit path; a missing path is recovered from the session's own records or clarified with the user, never inferred from the latest folder.
+- Independent new sessions allocate separate directories. A new task in the same session preserves earlier approved plans before writing a fresh plan; their presence does not authorize resuming them. Existing legacy artifacts are preserved. Workspace separation does not isolate concurrent source-code edits.
 
 ## Development
 
