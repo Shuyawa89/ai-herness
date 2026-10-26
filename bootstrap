@@ -412,6 +412,7 @@ SKILL_ALLOWLIST=(
   consulting-pptx-skill
   task-dashboard
   security-audit
+  yomiyasu
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand

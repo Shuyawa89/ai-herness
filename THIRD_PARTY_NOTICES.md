@@ -44,4 +44,16 @@ The MIT license text is preserved in `LICENSES/ayghri-i-have-adhd-MIT.txt`.
 
 The MIT license text is preserved in `LICENSES/cloudflare-security-audit-skill-MIT.txt`.
 
+## yomiyasu
+
+- Source: https://github.com/nanaism/yomiyasu
+- Upstream release: `v2.4.0`
+- Upstream revision: `ae258d7a57b335673e30b88a018ae08d4f72c449`
+- Installed source record: `skills/yomiyasu/`
+- License: MIT; bundled Unicode-derived data uses Unicode License V3.
+- Copyright: 2026 nanaism; Unicode data copyright 1991-2026 Unicode, Inc.
+- Local changes: none; registered in the harness bootstrap allowlist.
+
+The license texts are preserved in `skills/yomiyasu/LICENSE` and `skills/yomiyasu/UNICODE-LICENSE.txt`.
+
 The remaining skills were migrated from pre-existing personal configuration. Their upstream provenance was not recorded in the original local setup; review provenance before publishing this repository publicly.
