@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeProgress, agentHealth, elapsed, duration, eventsFor, planCounts, phaseState, phaseCounts } from '../skills/task-dashboard/assets/state.mjs';
+import { normalizeProgress, agentHealth, elapsed, duration, eventsFor, planCounts, phaseState, phaseCounts, taskListState, filterTasks } from '../skills/task-dashboard/assets/state.mjs';
 import { escapeHtml } from '../skills/task-dashboard/assets/format.mjs';
 
 test('a minimal file has no harness, model or timing requirements',()=>{
@@ -109,4 +109,28 @@ test('initial task links select only a registered safe identifier',async()=>{
  assert.equal(initialTaskId(tasks,'?task=../escape'),'a');
  assert.equal(initialTaskId(tasks,''),'a');
  assert.equal(initialTaskId([],'?task=b'),null);
+});
+
+
+test('task list labels and filters share reported state without age heuristics', () => {
+ const tasks = [
+  {id:'active',status:'running',startedAt:0},
+  {id:'done',status:'completed'},
+  {id:'waiting',status:'waiting'},
+  {id:'failed',status:'failed'},
+  {id:'child',status:'running',attention:'waiting'},
+  {id:'child-failed',status:'running',attention:'failed'},
+  {id:'unavailable',status:'completed',unavailable:true},
+  {id:'pending',status:'pending'},
+  {id:'unknown',status:'unknown'}
+ ];
+ assert.deepEqual(filterTasks(tasks,'running').map(task=>task.id),['active']);
+ assert.deepEqual(filterTasks(tasks,'completed').map(task=>task.id),['done']);
+ assert.deepEqual(filterTasks(tasks,'attention').map(task=>task.id),['waiting','failed','child','child-failed','unavailable']);
+ assert.equal(filterTasks(tasks).length,tasks.length);
+ assert.equal(taskListState(tasks[4]).label,'確認が必要');
+ assert.equal(taskListState(tasks[5]).tone,'danger');
+ assert.equal(taskListState(tasks[6]).label,'確認が必要');
+ assert.equal(taskListState(tasks[0]).label,'実行中');
+ assert.equal(taskListState({status:'completed',attention:'failed'}).category,'completed');
 });

@@ -28,7 +28,7 @@ func run(args []string) error {
 	}
 	args = f.Args()
 	if len(args) == 0 {
-		return errors.New("expected register, update, or server")
+		return errors.New("expected register, update, finish, or server")
 	}
 	*root, e = filepath.Abs(*root)
 	if e != nil {
@@ -102,6 +102,35 @@ func run(args []string) error {
 			})
 		}
 		return update(path, kind, id, patch, *event, *cwd)
+	case "finish":
+		if len(args) < 2 {
+			return errors.New("expected finish FILE --agent ID")
+		}
+		f := flags("finish")
+		agent := f.String("agent", "", "")
+		status := f.String("status", "completed", "")
+		current := f.String("current", "", "")
+		reason := f.String("reason", "", "")
+		if e = f.Parse(args[2:]); e != nil {
+			return e
+		}
+		if f.NArg() != 0 {
+			return errors.New("unexpected finish arguments")
+		}
+		var currentValue, reasonValue *string
+		f.Visit(func(v *flag.Flag) {
+			if v.Name == "current" {
+				currentValue = current
+			}
+			if v.Name == "reason" {
+				reasonValue = reason
+			}
+		})
+		result, e := finish(args[1], *agent, *status, currentValue, reasonValue)
+		if e != nil {
+			return e
+		}
+		return output(result)
 	case "server":
 		if len(args) < 2 {
 			return errors.New("expected server start, stop, or status")

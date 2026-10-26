@@ -101,6 +101,20 @@ export function agentHealth(agent) {
   const [label, tone] = labels[agent.status] ?? labels.unknown;
   return { label, tone, reason: ['waiting', 'failed'].includes(agent.status) ? agent.reason : '' };
 }
+// List labels and filters use the same reported state, never report age.
+export function taskListState(task) {
+  if (task.unavailable) return { label: '確認が必要', tone: 'warning', category: 'attention' };
+  if (task.attention && !['completed', 'failed', 'waiting'].includes(task.status)) {
+    return { label: '確認が必要', tone: task.attention === 'failed' ? 'danger' : 'warning', category: 'attention' };
+  }
+  const health = agentHealth(task);
+  const category = ['waiting', 'failed'].includes(task.status) ? 'attention'
+    : task.status === 'completed' ? 'completed' : task.status === 'running' ? 'running' : 'other';
+  return { ...health, category };
+}
+export function filterTasks(tasks, filter = 'all') {
+  return tasks.filter(task => filter === 'all' || taskListState(task).category === filter);
+}
 export function taskHealth(run) {
   const reported = agentHealth(run);
   if (['completed', 'failed', 'waiting'].includes(run.status)) return { ...reported, ...(run.reason ? { title: reported.label, description: run.reason } : {}) };

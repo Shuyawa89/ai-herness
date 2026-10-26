@@ -18,7 +18,7 @@
   <div class="workspace">
     <aside class="sidebar" aria-label="実行の情報">
       <div class="workspace-label"><span class="project-mark" aria-hidden="true">T</span><div>Taskroom<small>ローカルワークスペース</small></div></div>
-      <nav id="task-navigation" aria-label="タスク一覧" hidden><span class="section-label">タスク</span><p id="index-notice" class="index-notice" role="status" hidden></p><div id="task-list"></div></nav>
+      <nav id="task-navigation" aria-label="タスク一覧" hidden><div class="task-navigation-heading"><span class="section-label">タスク</span><span id="task-list-count" class="task-list-count" role="status" aria-live="polite"></span></div><label class="task-filter-label" for="task-filter">表示するタスク<select id="task-filter"><option value="all">すべて</option><option value="running">実行中</option><option value="attention">確認が必要</option><option value="completed">完了済み</option></select></label><p id="index-notice" class="index-notice" role="status" hidden></p><div id="task-list"></div></nav>
       <div id="standalone-information" class="sidebar-section"><span class="section-label">今回のタスク</span><div class="run-selected"><span aria-hidden="true">◉</span><div><span id="sidebar-title">読み込み中</span><small id="run-id"></small></div></div></div>
       <dl id="standalone-meta" class="run-meta"><div><dt>開始時刻</dt><dd id="start-time">—</dd></div></dl>
     </aside>

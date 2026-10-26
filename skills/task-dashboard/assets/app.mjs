@@ -1,4 +1,4 @@
-import { normalizeProgress, normalizeTaskIndex, initialTaskId, createTaskSelection, agentHealth, taskHealth, workForPhase, planCounts, phaseCounts, phaseState, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth } from './state.mjs';
+import { normalizeProgress, normalizeTaskIndex, initialTaskId, createTaskSelection, agentHealth, taskHealth, workForPhase, planCounts, phaseCounts, phaseState, eventsFor, visibleEvents, duration, elapsed, timestamp, participantDepth, taskListState, filterTasks } from './state.mjs';
 import { escapeHtml as e, timeOf } from './format.mjs';
 
 const $ = id => document.getElementById(id);
@@ -10,6 +10,7 @@ let connected = false;
 let hasConnected = false;
 const shared = document.documentElement.dataset.dashboardMode === 'shared';
 let tasks = [], selectedTask = null;
+let taskFilter = 'all';
 let firstIndex = true;
 const selection = createTaskSelection();
 let selectionToken = selection.select(null);
@@ -53,12 +54,12 @@ function updateConnection(ok) {
 }
 function renderTaskList() {
   if (!shared) return;
-  replace('task-list', tasks.length ? tasks.map(task => {
-    const health = task.attention && !['completed', 'failed', 'waiting'].includes(task.status)
-      ? { label: '確認が必要', tone: task.attention === 'failed' ? 'danger' : 'warning' }
-      : agentHealth(task);
+  const visible = filterTasks(tasks, taskFilter);
+  $('task-list-count').textContent = `${visible.length} / ${tasks.length} 件`;
+  replace('task-list', visible.length ? visible.map(task => {
+    const health = taskListState(task);
     return `<button id="task-${e(task.id)}" class="task-link" type="button" data-task="${e(task.id)}" aria-current="${task.id === selectedTask ? 'page' : 'false'}"><span class="task-link-title">${e(task.title)}</span><span class="task-link-meta"><span class="task-state ${e(health.tone)}">${e(health.label)}</span><span>${durationTag(task)}</span></span>${task.unavailable ? '<span class="task-unavailable">進捗を読み込めません</span>' : ''}</button>`;
-  }).join('') : '<p class="task-list-empty">登録されたタスクはありません。</p>');
+  }).join('') : `<p class="task-list-empty">${tasks.length ? '条件に一致するタスクはありません。' : '登録されたタスクはありません。'}</p>`);
   updateClock();
 }
 function showEmpty(message) {
@@ -214,6 +215,7 @@ async function pollIndex() {
     $('index-notice').hidden = false;
   } finally { setTimeout(pollIndex, 5000); }
 }
+$('task-filter').addEventListener('change', event => { taskFilter = event.target.value; renderTaskList(); });
 $('activity-filter').addEventListener('change', event => { filter = event.target.value; if (run) renderActivity(); });
 $('main').addEventListener('click', event => {
   if (!run) return;
