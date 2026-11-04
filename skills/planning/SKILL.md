@@ -25,6 +25,17 @@ identifiers retain their original form. Keep the plan concise and reviewable.
 For work with dependencies, include Mermaid DAG nodes, their order, and a
 verification method per node.
 
+After successfully writing the plan, run the following once, substituting the
+canonical Planning Skill path and this session's exact absolute plan path:
+
+```sh
+node /absolute/planning/scripts/show-workflow-plan.mjs /absolute/session-workspace/workflow-plan.md
+```
+
+The script handles environment checks and failures without interrupting the
+workflow. Do not inspect the environment or retry on its behalf. Then present
+the plan and wait for approval as usual.
+
 ```mermaid
 flowchart LR
   a[調査] --> b[実装]

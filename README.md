@@ -147,7 +147,11 @@ Pi ではモデルが `prewalk_workspace` ツールに短い作業名を渡し�
 
 計画の見出し・説明・図のラベルは日本語にする。パス・コマンド・識別子は元の表記を維持する。既存の `.temp-local/workflow-plan.md` などは自動移動・削除しない。この仕組みは作業用ファイルの分離であり、ソースコードの同時編集には worktree などによる別の分離が必要。
 
-検証: `node --test tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk-adapter_test.mjs`、`bash tests/bootstrap_test.sh`。
+通常の Planner はプラン作成後、`skills/planning/scripts/show-workflow-plan.mjs` を一度実行する。herdr の現在のペインと有効な `herdr-file-viewer` が利用できる場合、プランを右のペインに開く。対応していない環境や起動失敗時は何も表示せず、承認待ちを続ける。この表示は Prewalk には適用されない。
+
+ビューアー上の内容は自動更新されない場合があるため、変更後はビューアーで `r` を押す。Markdown の装飾にはプラグイン側の `glow` が必要な場合がある。プランを開く際、Git の無視対象ファイルの名前がツリーに表示されることがある。無効化するには `HERDR_WORKFLOW_PLAN_VIEWER=off` を設定する。手動診断・再表示には、それぞれ `node <planning-skill>/scripts/show-workflow-plan.mjs --diagnose <絶対プランパス>`、`node <planning-skill>/scripts/show-workflow-plan.mjs --retry <絶対プランパス>` を使う。再表示前に、既にペインが開いていないことを確認する。
+
+検証: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk-adapter_test.mjs`、`bash tests/bootstrap_test.sh`。
 
 ## 既存のマシン固有設定
 
