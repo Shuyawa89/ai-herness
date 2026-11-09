@@ -50,7 +50,7 @@ one response.
 
 - **Explorer**: requests to inspect, investigate, or understand. Use the `explore` Skill; report facts and unknowns only.
 - **Planner**: requests for an approach or design. Use the `planning` Skill; write a DAG to `<session-workspace>/workflow-plan.md` and wait for approval before implementation.
-- **Worker**: requests to implement or fix an approved task. Use the `worker` Skill. For unfamiliar or substantial work, use the Pi `/prewalk` command so the frontier model establishes the plan and first implementation pattern before the worker model continues.
+- **Worker**: requests to implement or fix an approved task. Use the `worker` Skill. Use Prewalk only when the user explicitly requests it (for example, the Pi `/prewalk` command or an explicit instruction to use Prewalk); never start Prewalk on your own judgment that the work is unfamiliar or substantial.
 - **Critic**: requests to review or verify. Use the `critic` Skill and review from evidence, not intent.
 - **Promoter**: requests to communicate verified work. Use the `promoter` Skill only after a Critic pass.
 
@@ -93,5 +93,6 @@ A new request does not resume an unfinished plan unless the user explicitly refe
 ## Completion
 
 - Run applicable tests, type checks, linting, and builds.
-- Report what changed, what was verified, and any remaining limitations.
+- Report any required user decision first, then changes, evidence against acceptance criteria, and remaining risks or unverified items. Distinguish verified facts from assumptions; do not treat missing verification as a pass.
+- Before asking for human completion approval, provide a review packet: a concise summary of the outcome and changed paths, passing and missing checks, and concrete items for the user to inspect or try with the expected result. State which remaining risks or boundary decisions need their judgment, then ask them to approve completion or request revisions. Never ask for approval without saying what it covers.
 - Consider the task complete only when requirements are met and relevant checks pass.
