@@ -84,6 +84,24 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.claude/skills/design-check" "$canonical_repo/skill-variants/explicit/design-check"
   assert_link "$user_home/.codex/skills/design-check" "$canonical_repo/skills/design-check"
   assert_link "$user_home/.agents/skills/design-check" "$canonical_repo/skill-variants/explicit/design-check"
+  assert_link "$user_home/.claude/skills/i-have-adhd" "$canonical_repo/skill-variants/explicit/i-have-adhd"
+  assert_link "$user_home/.codex/skills/i-have-adhd" "$canonical_repo/skills/i-have-adhd"
+  assert_link "$user_home/.agents/skills/i-have-adhd" "$canonical_repo/skill-variants/explicit/i-have-adhd"
+  assert_link "$user_home/.claude/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.agents/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.codex/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
+  assert_link "$user_home/.claude/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
+  assert_link "$user_home/.agents/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
+  assert_link "$user_home/.codex/skills/task-dashboard" "$canonical_repo/skills/task-dashboard"
+  assert_link "$user_home/.claude/skills/security-audit" "$canonical_repo/skills/security-audit"
+  assert_link "$user_home/.agents/skills/security-audit" "$canonical_repo/skills/security-audit"
+  assert_link "$user_home/.codex/skills/security-audit" "$canonical_repo/skills/security-audit"
+  assert_link "$user_home/.claude/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
+  assert_link "$user_home/.agents/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
+  assert_link "$user_home/.codex/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
+  assert_link "$user_home/.claude/skills/unslop" "$canonical_repo/skills/unslop"
+  assert_link "$user_home/.agents/skills/unslop" "$canonical_repo/skills/unslop"
+  assert_link "$user_home/.codex/skills/unslop" "$canonical_repo/skills/unslop"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
@@ -108,7 +126,7 @@ test_explicit_skill_variants_match_sources() {
   local openai_config
   local implicit_invocation_policy_count
 
-  for skill_name in understand design-check; do
+  for skill_name in understand design-check i-have-adhd; do
     source_file="$REPO_ROOT/skills/$skill_name/SKILL.md"
     variant_file="$REPO_ROOT/skill-variants/explicit/$skill_name/SKILL.md"
     openai_config="$REPO_ROOT/skills/$skill_name/agents/openai.yaml"
@@ -263,7 +281,9 @@ test_removed_skill_is_detected_and_cleaned() {
   mkdir -p "$case_root" "$user_home"
   cp -R "$REPO_ROOT" "$copied_repo"
   env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" >/dev/null
-  sed -i '' '/^  explore$/d' "$copied_repo/bootstrap"
+  sed '/^  explore$/d' "$copied_repo/bootstrap" > "$copied_repo/bootstrap.tmp"
+  mv "$copied_repo/bootstrap.tmp" "$copied_repo/bootstrap"
+  chmod +x "$copied_repo/bootstrap"
 
   expect_status 1 env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" --check
   env AI_HARNESS_USER_HOME="$user_home" AI_HARNESS_STATE_ROOT="$state_root" "$copied_repo/bootstrap" >/dev/null

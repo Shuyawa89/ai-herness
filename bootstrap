@@ -422,10 +422,17 @@ SKILL_ALLOWLIST=(
   harness-workflow
   understand
   design-check
+  i-have-adhd
+  consulting-pptx-skill
+  task-dashboard
+  security-audit
+  yomiyasu
+  unslop
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand
   design-check
+  i-have-adhd
 )
 
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"

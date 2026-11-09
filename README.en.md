@@ -139,7 +139,7 @@ The selected models must already be authenticated and appear in `pi --list-model
 - When Cheap needs a hard-boundary expansion, Frontier proposes it and a human approves each displayed proposal. In interactive Pi, `OK` approves the proposal currently displayed; `NG` rejects only that proposal and keeps the discussion going. For example, `NG` alone asks what to change, while `NG, narrow the scope` carries that feedback directly into a revision. You can also describe a requested revision directly. Rejecting a scope-change proposal leaves the previously approved boundary in force. A revised proposal is displayed and needs fresh approval. `NG` on final completion also returns to revision and review; it does not complete the task. Use `/prewalk status` to inspect the state and `/prewalk off` to end routing. Human approval remains the completion gate even after a review passes. Only a standalone direct reply such as `OK` can approve; conditional replies and model-injected input cannot. Decision questions need an actual answer, not `OK / NG`.
 - Reopening the same Pi session automatically restores its matching non-terminal run and redisplays any pending proposal; restoration alone does not start work. If a required model is unavailable, the run stays paused with a warning in the conversation language and retries once on the next user input or session restore. `/prewalk off` can always end routing, including while paused. Stopped and completed runs are terminal: they do not resume, block later tool use, record later usage or progress, or update the plan view.
 - Human-facing plans and revisions follow the session conversation, with an explicit user language preference taking priority. A short reply such as `OK` or a command does not imply English. Automated tests can verify language selection and prompting, but cannot guarantee that a real model will always generate text in the requested language; check the actual plan text as well. Pi's status line shows `Plan → First edit → Build → Review → Done` in English, highlights only the current stage, and dims all other stages. `Awaiting approval` appears only while waiting; `F:`/`C:` show the Frontier/Cheap model names without provider prefixes, and `T:` shows the current thinking level. `/prewalk status` shows the full model IDs.
-- Non-context session custom entries are the canonical structured TaskState and audit record. While routing is active, `.temp-local/workflow-plan.md` is a human-facing view generated from that state, not an independent source of authority. Escalation retains the same session trajectory while rebuilding bounded relevant context. There is no guarantee that a provider switch preserves a model's private internal state.
+- Non-context session custom entries are the canonical structured TaskState and audit record. While routing is active, `.temp-local/workflow-plan.md` is a human-facing view generated from that state, not an independent source of authority. For ordinary planning without Prewalk routing, use the per-session workspace described below. Escalation retains the same session trajectory while rebuilding bounded relevant context. There is no guarantee that a provider switch preserves a model's private internal state.
 
 Claude Code and Codex can follow the same planning and approval principles manually, but they do not have automatic routing, and a separate model session is not guaranteed to share the same conversation trajectory.
 
@@ -147,8 +147,47 @@ Claude Code and Codex can follow the same planning and approval principles manua
 
 The current request's language selects one role and one Skill; the harness does not force a remembered `/workflow` command vocabulary. Planner approval and final completion remain conversational human gates. For substantial Pi implementation work, run `/prewalk` before the task to use the frontier-to-worker handoff.
 
+## Session workspaces
+
+Plans, notes, and verification artifacts live in a session-specific directory in the target project:
+
+```text
+.temp-local/sessions/
+  20261026-143052-plan-isolation/
+    workflow-plan.md
+    notes.md
+  20261026-143052-plan-isolation-2/
+    workflow-plan.md
+```
+
+Names combine a local-time timestamp with a short English task description. Only collisions receive numeric suffixes such as `-2` and `-3`; no UUID is needed. The agent runs Planning's `scripts/session-workspace.mjs` with `node`, the absolute project directory, and the short description. Atomic directory creation prevents independent sessions choosing the same name from overwriting existing files. No additional packages are required; the helper uses Node.js.
+
+In Pi, the model calls `prewalk_workspace` with the short description to use the same allocator. Pi stores the path in the session history, preserving it across rearming `/prewalk`, compaction, and resume. Independent new and forked sessions allocate separate directories. The frontier guard does not accept another session's plan as permission to edit source or allow writes to another session's scratch files.
+
+Ordinary skills retain the absolute directory in the conversation and handoff context. Resume with an explicit reference, for example: "Continue the approved plan at `.temp-local/sessions/20261026-143052-plan-isolation/workflow-plan.md`." Recover a missing path from that session's own records rather than choosing the latest directory. A new task in the same session preserves earlier approved plans before writing a fresh plan.
+
+Plan headings, explanatory prose, and diagram labels use Japanese; paths, commands, and identifiers retain their original form. Existing artifacts such as `.temp-local/workflow-plan.md` are not automatically moved or deleted. This isolates scratch artifacts; concurrent source-code edits still need separate worktrees or another isolation mechanism.
+
+After writing a plan, the ordinary Planner invokes `skills/planning/scripts/show-workflow-plan.mjs` once. When the current herdr pane and an enabled `herdr-file-viewer` are available, it opens the plan in a right-hand pane. Unsupported environments and launch failures are silent and do not interrupt the approval gate. This display integration does not apply to Prewalk.
+
+The viewer may not refresh external changes automatically; press `r` in the viewer after an update. Styled Markdown may require `glow` in the plugin environment. Opening a plan may also expose names of other Git-ignored files in the viewer tree. Set `HERDR_WORKFLOW_PLAN_VIEWER=off` to disable the integration. To diagnose or explicitly reopen a plan, run `node <planning-skill>/scripts/show-workflow-plan.mjs --diagnose <absolute-plan-path>` or `node <planning-skill>/scripts/show-workflow-plan.mjs --retry <absolute-plan-path>`. Before retrying, check that a viewer pane has not already opened.
+
+Checks: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`, `node tests/prewalk_test.mjs`, `node --test tests/prewalk-adapter_test.mjs`, and `bash tests/bootstrap_test.sh`.
+
 ## Existing machine-specific configuration
 
 The bootstrap deliberately does not modify `~/.codex/config.toml`, Claude settings, Pi settings, authentication, hooks, agents, or prompts. It adds only the reviewed shared Skills and the reviewed Pi Prewalk extension as symlinks. Repository-specific `AGENTS.md` and `CLAUDE.md` files continue to apply according to each tool's normal precedence rules.
 
 When working inside this repository, the same `AGENTS.md` may be discovered once globally and once as project guidance. This is harmless, but other repositories are the normal working location for this harness.
+
+## Live task dashboard
+
+`skills/task-dashboard/` provides a shared dashboard from ordinary Pi, Claude Code, Codex, and other agent sessions. The [skill](skills/task-dashboard/SKILL.md) registers the task and supplies a local URL without a special agent launcher or extension. A sidebar switches independent tasks; each task retains its plan, participants, models, elapsed times, history, working directories, branches, and checkout kinds.
+
+The shared tool uses Go's standard library. Run `bash skills/task-dashboard/scripts/build.sh` to build with an available Go toolchain or mise Go 1.27.2. The default binary is `~/.local/state/task-dashboard/bin/task-dashboard`; it needs neither Go nor Python at runtime. Binaries are platform-specific; process detachment and file locking currently target macOS/Linux.
+
+Task reports are stored separately under `~/.local/state/task-dashboard/` (override with `--root`). `task-dashboard server start` starts the loopback server independently of the calling session; `server status` and `server stop` inspect/stop the verified instance. No OS service or login autostart is installed. Stopping preserves data, affects all tasks' browser access, and ordinary report updates never restart serving.
+
+The coordinator registers children before dispatch; write-capable children issue short participant reports. File locks and atomic replacement preserve concurrent writers. Explicit working directories let the tool obtain Git facts deterministically. The browser polls compact task summaries less often and only the selected report about once a second, without model activity. Before handing control back, the coordinator uses `finish` to report both task and coordinator state: result delivery is completed, a question or approval request is waiting, and errors are failed. The task list filters all, running, attention, or completed entries. This displays reported progress, not automatic detection of skipped final updates or crashes. The [example data](skills/task-dashboard/assets/progress.example.json) is fictional. Legacy standalone JSON/static serving and the Python updater remain supported.
+
+`task-dashboard` stays on the bootstrap shared-skill allowlist. Checks: `node --test tests/dashboard-template.test.mjs tests/dashboard-multi.test.mjs`, `python3 tests/dashboard-reporting_test.py`, and `cd skills/task-dashboard && mise exec go@1.27.2 -- go test ./...`.

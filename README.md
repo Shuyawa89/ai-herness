@@ -140,7 +140,7 @@ pi
 - Cheap が hard-boundary の拡張を必要とする場合は Frontier へ戻し、表示された提案ごとに人間が承認する。Pi の対話画面では `OK` で現在表示中の提案を承認し、`NG` でその提案だけを不承認にして相談を続ける。たとえば `NG` だけなら変更したい点を確認し、`NG、範囲を小さくして` ならその指示で改訂する。変更内容を直接伝えて改訂を頼むこともできる。作業範囲の変更に `NG` と返すと、以前に承認した範囲が維持される。改訂案は新たに表示され、改めて承認が必要。最終完了への `NG` も作業を完了にせず、修正・再レビューへ戻る。`/prewalk status` で状態を確認し、`/prewalk off` で routing を終了できる。レビュー pass の後も完了は人間の承認 gate のまま。承認は単独の `OK` などの直接入力だけで行い、条件付きの返答やモデルからの入力では承認しない。判断を求める質問には、`OK / NG` ではなく回答内容を伝える。
 - 同じ Pi session を開き直した場合、対応する未終了 run は自動で復元され、承認待ちの提案があれば再表示される。復元しただけでは作業を開始しない。必要なモデルを選べない場合は保留して会話の言語で警告し、次の利用者入力または session 復元時に一度だけ再試行する。保留中でも `/prewalk off` でいつでも routing を終了できる。停止・完了した run は復帰せず、その後のツール利用を妨げたり、使用量・進捗を記録したり、計画ビューを更新したりしない。
 - 人が読む計画・改訂案は session の会話言語に従い、利用者が明示した言語の希望を優先する。`OK` のような短い返事やコマンドだけで英語とは判断しない。表示言語の選択や生成指示は自動テストで確認できるが、実モデルが常にその言語で生成する保証ではないため、実際の計画文も確認する。Pi のステータスラインは英語で `Plan → First edit → Build → Review → Done` を示し、現在の工程だけを強調し、それ以外を暗く表示する。承認待ちは `Awaiting approval` と表示し、承認後は次の作業を強調する。`F:`/`C:` はプロバイダ名を省いた Frontier/Cheap モデル名、`T:` は現在の Thinking level を示す。完全なモデルIDは `/prewalk status` で確認する。
-- session の非コンテキスト custom entries が構造化 TaskState と監査記録の正本。routing 中の `.temp-local/workflow-plan.md` はそこから生成する人間向けビューで、編集しても独立した権限・状態の正本にはならない。Frontier への escalation では同じ session の履歴を保持しつつ、関連情報を上限付きで再構成する。provider をまたいでもモデル内部の状態まで保持される保証はない。
+- session の非コンテキスト custom entries が構造化 TaskState と監査記録の正本。routing 中の `.temp-local/workflow-plan.md` はそこから生成する人間向けビューで、編集しても独立した権限・状態の正本にはならない。なお、Prewalk の routing を使わない通常の計画では、下記のセッション専用フォルダを使う。Frontier への escalation では同じ session の履歴を保持しつつ、関連情報を上限付きで再構成する。provider をまたいでもモデル内部の状態まで保持される保証はない。
 
 Claude Code と Codex では同じ計画・承認の考え方を手動で適用できるが、自動 routing はなく、別 session のモデルが同じ会話 trajectory を持つとは限らない。
 
@@ -149,8 +149,47 @@ Claude Code と Codex では同じ計画・承認の考え方を手動で適用�
 
 現在の依頼の言葉が役割と Skill を一つ選ぶ。`/workflow` のようなコマンド語彙は強制しない。Planner の承認と完了判断は会話の中で人間が行う gate であり、実装フェーズへ切り替える。
 
+## セッション専用の作業フォルダ
+
+計画・調査メモ・検証結果は、対象プロジェクト内のセッション専用フォルダに保存する。
+
+```text
+.temp-local/sessions/
+  20261026-143052-plan-isolation/
+    workflow-plan.md
+    notes.md
+  20261026-143052-plan-isolation-2/
+    workflow-plan.md
+```
+
+名前はローカル時刻のタイムスタンプと、作業内容を表す短い英語の名前を組み合わせる。同名の場合だけ `-2`、`-3` と連番を付ける。UUIDは使わない。エージェントが Planning スキルの `scripts/session-workspace.mjs` を `node` で実行し、プロジェクトの絶対パスと短い作業名を渡す。フォルダ作成は排他的に行うため、複数セッションが同時に同じ名前を選んでも既存ファイルを上書きしない。追加パッケージは不要で、Node.js を利用する。
+
+Pi ではモデルが `prewalk_workspace` ツールに短い作業名を渡し、同じ作成処理を利用する。保存先を Pi のセッション履歴に記録するため、再度の `/prewalk`、会話の圧縮、セッション再開でも同じフォルダを使う。独立した新規セッションや fork では別フォルダを作る。最初のモデルの編集制限では、別セッションの計画でソース編集の条件を満たしたり、別セッションの作業用ファイルへ書き込んだりできない。
+
+通常のスキルでは、会話と引き継ぎ情報に保存先の絶対パスを保持する。再開時は「`.temp-local/sessions/20261026-143052-plan-isolation/workflow-plan.md` の承認済み計画を続けて」のように対象を明示する。パスが不明ならそのセッションの記録から復元し、最新フォルダの自動選択はしない。同じセッションの別タスクで新しい計画を書く場合は、以前の承認済み計画を保持する。
+
+計画の見出し・説明・図のラベルは日本語にする。パス・コマンド・識別子は元の表記を維持する。既存の `.temp-local/workflow-plan.md` などは自動移動・削除しない。この仕組みは作業用ファイルの分離であり、ソースコードの同時編集には worktree などによる別の分離が必要。
+
+通常の Planner はプラン作成後、`skills/planning/scripts/show-workflow-plan.mjs` を一度実行する。herdr の現在のペインと有効な `herdr-file-viewer` が利用できる場合、プランを右のペインに開く。対応していない環境や起動失敗時は何も表示せず、承認待ちを続ける。この表示は Prewalk には適用されない。
+
+ビューアー上の内容は自動更新されない場合があるため、変更後はビューアーで `r` を押す。Markdown の装飾にはプラグイン側の `glow` が必要な場合がある。プランを開く際、Git の無視対象ファイルの名前がツリーに表示されることがある。無効化するには `HERDR_WORKFLOW_PLAN_VIEWER=off` を設定する。手動診断・再表示には、それぞれ `node <planning-skill>/scripts/show-workflow-plan.mjs --diagnose <絶対プランパス>`、`node <planning-skill>/scripts/show-workflow-plan.mjs --retry <絶対プランパス>` を使う。再表示前に、既にペインが開いていないことを確認する。
+
+検証: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk-adapter_test.mjs`、`bash tests/bootstrap_test.sh`。
+
 ## 既存のマシン固有設定
 
 bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証、hooks、agents、prompts を意図的に変更しない。追加するのはレビュー済みの共有 Skill とレビュー済みの Pi Prewalk extension の symlink のみ。リポジトリ固有の `AGENTS.md` と `CLAUDE.md` は、各ツールの通常の優先順位ルールに従って適用される。
 
 このリポジトリ内で作業するとき、同じ `AGENTS.md` がグローバルとプロジェクトの両方として検出されることがある。これは無害だが、この harness の通常の作業場所は他のリポジトリである。
+
+## タスクのライブダッシュボード
+
+`skills/task-dashboard/` は、普段の Pi・Claude Code・Codex セッションから利用する共通ダッシュボードです。[スキル](skills/task-dashboard/SKILL.md)を読み込むと、AI がタスクを登録してローカル URL を提供します。独立した複数タスクを左の一覧で切り替え、計画・担当・モデル・経過時間・履歴・作業ディレクトリ・ブランチ・worktree 情報を確認できます。専用のエージェント起動コマンドや拡張は不要です。
+
+共通ツールは Go の標準ライブラリで実装され、ビルド後は Go・Python の実行環境を必要としません。ビルドは `bash skills/task-dashboard/scripts/build.sh`。既存の Go、または mise の Go 1.27.2 を利用し、既定では `~/.local/state/task-dashboard/bin/task-dashboard` に出力します。ビルド済みファイルは OS・CPU ごとに必要です。現在のプロセス管理・ロックは macOS/Linux 対応です。
+
+進捗は `~/.local/state/task-dashboard/`（`--root` で変更可能）にタスク別で保存されます。`task-dashboard server start` はセッションから独立したローカルサーバーを起動し、`server status`・`server stop` で確認・停止できます。OS の自動起動設定は追加しません。サーバーを止めても進捗ファイルは残り、通常の更新処理が勝手に起動し直すことはありません。停止すると全タスクの画面配信が止まります。
+
+調整役は子を起動前に登録し、書き込み可能な子も短いコマンドで自分の情報を更新します。ロックとファイル置換が同時更新を保護し、作業場所を渡すと Git 情報を取得します。ブラウザーはタスク一覧を低頻度、選択中の詳細を約1秒ごとに読み込み、モデルを呼び出しません。最終回答の直前に `finish` でタスクと調整役をまとめて更新し、結果報告は完了、質問・承認待ちは確認待ちとして記録します。一覧は「すべて／実行中／確認が必要／完了済み」で絞り込めます。表示は報告された進捗であり、終了コマンドの呼び忘れや強制終了を自動検知するものではありません。[サンプルデータ](skills/task-dashboard/assets/progress.example.json)は架空の内容です。従来の単一 JSON・静的サーバー方式と Python 更新ヘルパーも利用できます。
+
+`task-dashboard` は bootstrap の共有スキル配布対象です。通常のセットアップで Pi・Claude Code・Codex のスキル配置先へリンクされます。検証: `node --test tests/dashboard-template.test.mjs tests/dashboard-multi.test.mjs`、`python3 tests/dashboard-reporting_test.py`、`cd skills/task-dashboard && mise exec go@1.27.2 -- go test ./...`。
