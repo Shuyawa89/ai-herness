@@ -125,7 +125,7 @@ From the target project directory, start Pi normally:
 pi
 ```
 
-Then run `/prewalk` before submitting the task. It resolves the route from the local config; `/prewalk <second>` or `/prewalk <first> <second>` overrides it for one invocation, and `/prewalk off` disarms it.
+Then run `/prewalk` before submitting the task. It resolves the route from the local config; `/prewalk <second>` or `/prewalk <first> <second>` overrides it for one invocation, and `/prewalk off` disarms it. Prewalk is an explicit-invocation-only skill: it starts only when the user runs `/prewalk` or explicitly asks for Prewalk, never because an agent judges the work substantial or unfamiliar.
 
 The selected models must already be authenticated and appear in `pi --list-models`. Provider definitions and credentials belong in `~/.pi/agent/models.json` and Pi's credential storage, never in this repository. Prewalk writes a human-facing plan view and scratch artifacts under `.temp-local/` in the target project; this directory is globally ignored by Git.
 

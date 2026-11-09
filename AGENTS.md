@@ -50,7 +50,7 @@ one response.
 
 - **Explorer**: requests to inspect, investigate, or understand. Use the `explore` Skill; report facts and unknowns only.
 - **Planner**: requests for an approach or design. Use the `planning` Skill; write a DAG to `<session-workspace>/workflow-plan.md` and wait for approval before implementation.
-- **Worker**: requests to implement or fix an approved task. Use the `worker` Skill. For unfamiliar or substantial work, use the Pi `/prewalk` command so the frontier model establishes the plan and first implementation pattern before the worker model continues.
+- **Worker**: requests to implement or fix an approved task. Use the `worker` Skill. Use Prewalk only when the user explicitly requests it (for example, the Pi `/prewalk` command or an explicit instruction to use Prewalk); never start Prewalk on your own judgment that the work is unfamiliar or substantial.
 - **Critic**: requests to review or verify. Use the `critic` Skill and review from evidence, not intent.
 - **Promoter**: requests to communicate verified work. Use the `promoter` Skill only after a Critic pass.
 

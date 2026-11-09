@@ -125,7 +125,7 @@ Prewalk は Pi の versioned extension が、frontier モデル（Frontier）に
 pi
 ```
 
-タスクを入力する前に `/prewalk` を実行する。ルートはローカル設定から解決され、`/prewalk <second>` または `/prewalk <first> <second>` で 1 回だけ上書き、`/prewalk off` で解除できる。
+タスクを入力する前に `/prewalk` を実行する。ルートはローカル設定から解決され、`/prewalk <second>` または `/prewalk <first> <second>` で 1 回だけ上書き、`/prewalk off` で解除できる。Prewalk は明示呼び出し限定の Skill で、ユーザーが `/prewalk` を実行するか Prewalk の使用を明示したときだけ開始する。作業の規模や不慣れさを理由にエージェントが自動で開始することはない。
 
 
 選択するモデルは認証済みで `pi --list-models` に表示されている必要がある。プロバイダ定義と認証情報は `~/.pi/agent/models.json` と Pi の credential storage に置き、このリポジトリには絶対に置かない。Prewalk は対象プロジェクトの `.temp-local/` 配下に人間向けの計画ビューと scratch ファイルを書く。このディレクトリは Git のグローバル ignore 対象。

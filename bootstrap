@@ -433,6 +433,7 @@ EXPLICIT_SKILL_ALLOWLIST=(
   understand
   design-check
   i-have-adhd
+  prewalk
 )
 
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"

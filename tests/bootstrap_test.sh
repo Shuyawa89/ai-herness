@@ -87,6 +87,9 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.claude/skills/i-have-adhd" "$canonical_repo/skill-variants/explicit/i-have-adhd"
   assert_link "$user_home/.codex/skills/i-have-adhd" "$canonical_repo/skills/i-have-adhd"
   assert_link "$user_home/.agents/skills/i-have-adhd" "$canonical_repo/skill-variants/explicit/i-have-adhd"
+  assert_link "$user_home/.claude/skills/prewalk" "$canonical_repo/skill-variants/explicit/prewalk"
+  assert_link "$user_home/.codex/skills/prewalk" "$canonical_repo/skills/prewalk"
+  assert_link "$user_home/.agents/skills/prewalk" "$canonical_repo/skill-variants/explicit/prewalk"
   assert_link "$user_home/.claude/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
   assert_link "$user_home/.agents/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
   assert_link "$user_home/.codex/skills/consulting-pptx-skill" "$canonical_repo/skills/consulting-pptx-skill"
@@ -126,7 +129,7 @@ test_explicit_skill_variants_match_sources() {
   local openai_config
   local implicit_invocation_policy_count
 
-  for skill_name in understand design-check i-have-adhd; do
+  for skill_name in understand design-check i-have-adhd prewalk; do
     source_file="$REPO_ROOT/skills/$skill_name/SKILL.md"
     variant_file="$REPO_ROOT/skill-variants/explicit/$skill_name/SKILL.md"
     openai_config="$REPO_ROOT/skills/$skill_name/agents/openai.yaml"

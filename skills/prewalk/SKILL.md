@@ -1,6 +1,6 @@
 ---
 name: prewalk
-description: Use a frontier model to inspect and plan substantial work, then hand off to a cheaper model with bounded same-session reviews and repair routing in Pi.
+description: Use a frontier model to inspect and plan substantial work, then hand off to a cheaper model with bounded same-session reviews and repair routing in Pi. Use only when the user explicitly invokes this skill.
 ---
 
 # Prewalk
@@ -9,6 +9,7 @@ Prewalk keeps substantial Pi work in one session while using Frontier for reposi
 
 ## When to use
 
+- The user has explicitly invoked Prewalk (for example, the `/prewalk` command in Pi, `/prewalk` in Claude Code, or `$prewalk` in Codex). Never start Prewalk on your own judgment that the work is substantial or unfamiliar.
 - A feature, refactor, or unfamiliar area benefits from repository exploration and a concrete multi-step plan.
 - The implementation can proceed on Cheap with bounded Frontier reviews.
 - Avoid it for trivial work or tasks where every step needs Frontier-level judgment.
