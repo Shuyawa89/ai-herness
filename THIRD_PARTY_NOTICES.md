@@ -8,18 +8,18 @@
 - Original installer content hash: `3013fdeb8a11b10b1eb795ec3ae8bfca38f7c26d`
 - License: MIT
 - Copyright: 2026 Vercel, Inc.
-- Local changes: commands use `pnpm` with the reviewed CLI release `skills@1.7.4` (Node.js >=22.20.0), retain source review and explicit installation approval, and preserve harness-managed links instead of running unattended bulk updates.
+- Local changes: commands use `pnpm` with the reviewed CLI release `skills@1.7.6` (Node.js >=22.20.0), retain source review and explicit installation approval, and preserve harness-managed links instead of running unattended bulk updates.
 
 The MIT license text is preserved in `LICENSES/vercel-labs-skills-MIT.txt`.
 
 ## consulting-pptx-skill
 
 - Source: https://github.com/carnot-tech/jinba-consulting-pptx-skill (renamed from `carnot-tech/consulting-pptx-skill`)
-- Upstream revision: `e5f35e57e14d3998249a559c620a9286c95b4595`
+- Upstream revision: `60affb5ea3fe4356465f0d56ad852d83329b7c56`
 - Installed source record: `skills/consulting-pptx-skill/`
 - License: MIT
 - Copyright: 2026 Carnot AI Inc.
-- Local changes: vendored update guidance follows harness provenance; image cleanup matches literal deck names; browser automation connects only to its newly launched browser, with regression tests for both fixes. Trailing whitespace in upstream rules and a new test fixture is normalized. Upstream GitHub automation metadata is not distributed.
+- Local changes: vendored update guidance follows harness provenance; image cleanup matches literal deck names; browser automation connects only to its newly launched browser, with regression tests for both fixes. The snapshot regression tests in `tests/test_snapshot.py` combine upstream's pdftoppm tests with the harness cleanup regression test in one file. Trailing whitespace in upstream rules and a new test fixture is normalized. Upstream GitHub automation metadata is not distributed.
 
 The MIT license text is preserved in `skills/consulting-pptx-skill/LICENSE` and `LICENSES/carnot-tech-consulting-pptx-skill-MIT.txt`.
 
@@ -37,12 +37,12 @@ The MIT license text is preserved in `LICENSES/ayghri-i-have-adhd-MIT.txt`.
 ## security-review and tdd-workflow
 
 - Source: https://github.com/affaan-m/ECC
-- Upstream revision: `25278e7d7b6cf6e6a4e7a6c8e10f14ff22f0eb5b`
+- Upstream revision: `d2ef2680594f9a17526a6e1a2e18b3d242c5d17b`
 - Installed source records: `skills/security-review/SKILL.md` and `skills/tdd-workflow/SKILL.md`
 - Provenance: the original local bodies match upstream initial release `45959c326ee2fb91a72b906c7cf32e204baf4c5e`, except for intentional package-manager adaptations. This establishes a source match; the original installation revision was not recorded.
 - License: MIT
 - Copyright: 2026 Affaan Mustafa
-- Local changes: project package-manager and runner detection works without ECC's unbundled helper or `bun-runtime` companion, and selects Bun's native runner only from project evidence. Validation evidence supports evaluated compile failures and detached checkouts without automatic staging or commits. Plan handoff respects existing task authorization instead of requiring approval for every routine command or accepting override phrases. Existing harness Git authorization and repository-only distribution are preserved.
+- Local changes: project package-manager and runner detection works without ECC's unbundled helper or `bun-runtime` companion, and selects Bun's native runner only from project evidence. Validation evidence supports evaluated compile failures and detached checkouts without automatic staging or commits. Plan handoff respects existing task authorization instead of requiring approval for every routine command or accepting override phrases. Existing harness Git authorization and repository-only distribution are preserved. Upstream's Step 0 change in `tdd-workflow` between `25278e7` and `d2ef268` (resolving ECC's detector script through `CLAUDE_PLUGIN_ROOT`) was reviewed and not adopted, because it still depends on ECC's unbundled helper, which this harness deliberately does not use; `security-review` is unchanged upstream in that range.
 
 The MIT license text is preserved in `LICENSES/affaan-m-ECC-MIT.txt`.
 
@@ -60,8 +60,8 @@ The MIT license text is preserved in `LICENSES/cloudflare-security-audit-skill-M
 ## yomiyasu
 
 - Source: https://github.com/nanaism/yomiyasu
-- Upstream release: `v2.4.0`
-- Upstream revision: `ae258d7a57b335673e30b88a018ae08d4f72c449`
+- Upstream release: `v2.5.0`
+- Upstream revision: `29d67ccb05e370b5958d72920a9cd1aa829dee80`
 - Installed source record: `skills/yomiyasu/`
 - License: MIT; bundled Unicode-derived data uses Unicode License V3.
 - Copyright: 2026 nanaism; Unicode data copyright 1991-2026 Unicode, Inc.

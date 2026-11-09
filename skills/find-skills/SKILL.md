@@ -20,12 +20,12 @@ Use this skill when the user:
 
 ## What is the Skills CLI?
 
-The Skills CLI (`pnpm dlx skills@1.7.4`) is a package manager for the open agent skills ecosystem. The pinned CLI version makes discovery reproducible; update it only after reviewing the release. This version requires Node.js >=22.20.0; verify the runtime before running it.
+The Skills CLI (`pnpm dlx skills@1.7.6`) is a package manager for the open agent skills ecosystem. The pinned CLI version makes discovery reproducible; update it only after reviewing the release. This version requires Node.js >=22.20.0; verify the runtime before running it.
 
 **Key commands:**
 
-- `pnpm dlx skills@1.7.4 find [query] [--owner <owner>]` - Search for skills interactively or by keyword, optionally scoped to a GitHub owner
-- `pnpm dlx skills@1.7.4 check` - Check for skill updates
+- `pnpm dlx skills@1.7.6 find [query] [--owner <owner>]` - Search for skills interactively or by keyword, optionally scoped to a GitHub owner
+- `pnpm dlx skills@1.7.6 check` - Check for skill updates
 
 Use `check` to identify candidates, then review and update each managed skill from its pinned source. The CLI bulk updater must not overwrite harness-managed files or symlinks.
 
@@ -54,16 +54,16 @@ For example, top skills for web development include:
 If the leaderboard doesn't cover the user's need, run the find command:
 
 ```bash
-pnpm dlx skills@1.7.4 find [query] [--owner <owner>]
+pnpm dlx skills@1.7.6 find [query] [--owner <owner>]
 ```
 
 For example:
 
-- User asks "how do I make my React app faster?" → `pnpm dlx skills@1.7.4 find react performance`
-- User asks "can you help me with PR reviews?" → `pnpm dlx skills@1.7.4 find pr review`
-- User asks "I need to create a changelog" → `pnpm dlx skills@1.7.4 find changelog`
+- User asks "how do I make my React app faster?" → `pnpm dlx skills@1.7.6 find react performance`
+- User asks "can you help me with PR reviews?" → `pnpm dlx skills@1.7.6 find pr review`
+- User asks "I need to create a changelog" → `pnpm dlx skills@1.7.6 find changelog`
 
-Use `--owner` when the user requests skills from a particular GitHub owner, for example `pnpm dlx skills@1.7.4 find react --owner vercel-labs`.
+Use `--owner` when the user requests skills from a particular GitHub owner, for example `pnpm dlx skills@1.7.6 find react --owner vercel-labs`.
 
 ### Step 4: Verify Quality Before Recommending
 
@@ -92,7 +92,7 @@ React and Next.js performance optimization guidelines from Vercel Engineering.
 (185K installs)
 
 To install it:
-pnpm dlx skills@1.7.4 add vercel-labs/agent-skills@react-best-practices
+pnpm dlx skills@1.7.6 add vercel-labs/agent-skills@react-best-practices
 
 Learn more: https://skills.sh/vercel-labs/agent-skills/react-best-practices
 ```
@@ -102,7 +102,7 @@ Learn more: https://skills.sh/vercel-labs/agent-skills/react-best-practices
 Install only after the user explicitly approves the reviewed source and revision. Do not skip confirmation prompts or perform unattended global installation.
 
 ```bash
-pnpm dlx skills@1.7.4 add <owner/repo@skill>
+pnpm dlx skills@1.7.6 add <owner/repo@skill>
 ```
 
 Preserve harness-managed paths and symlinks during installation. Copy the reviewed standard-format skill into `~/ai-harness/skills/`, run `~/ai-harness/bootstrap`, and review the resulting Git diff. Stage or commit changes only when the user requests it.
@@ -142,5 +142,5 @@ I searched for skills related to "xyz" but didn't find any matches.
 I can still help you with this task directly! Would you like me to proceed?
 
 If this is something you do often, you could create your own skill:
-pnpm dlx skills@1.7.4 init my-xyz-skill
+pnpm dlx skills@1.7.6 init my-xyz-skill
 ```
