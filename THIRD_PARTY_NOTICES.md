@@ -69,4 +69,15 @@ The MIT license text is preserved in `LICENSES/cloudflare-security-audit-skill-M
 
 The license texts are preserved in `skills/yomiyasu/LICENSE` and `skills/yomiyasu/UNICODE-LICENSE.txt`.
 
+## unslop
+
+- Source: https://github.com/heydamir/unslop
+- Upstream revision: `97daa3eb365670ea3f87ed85356cbfcee18105a5`
+- Installed source record: `skills/unslop/`
+- License: CC BY 4.0
+- Copyright: Damir Sokolovsky
+- Local changes: none; registered in the harness bootstrap allowlist. The attribution credit in `skills/unslop/SKILL.md` is preserved as required by the license.
+
+The CC BY 4.0 license text is preserved in `LICENSES/heydamir-unslop-CC-BY-4.0.txt`.
+
 The remaining skills were migrated from pre-existing personal configuration. Their upstream provenance was not recorded in the original local setup; review provenance before publishing this repository publicly.

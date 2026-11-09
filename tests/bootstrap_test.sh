@@ -98,6 +98,9 @@ test_fresh_install_backup_and_idempotency() {
   assert_link "$user_home/.claude/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
   assert_link "$user_home/.agents/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
   assert_link "$user_home/.codex/skills/yomiyasu" "$canonical_repo/skills/yomiyasu"
+  assert_link "$user_home/.claude/skills/unslop" "$canonical_repo/skills/unslop"
+  assert_link "$user_home/.agents/skills/unslop" "$canonical_repo/skills/unslop"
+  assert_link "$user_home/.codex/skills/unslop" "$canonical_repo/skills/unslop"
   grep -Fq "$canonical_home/.claude/CLAUDE.md" "$state_root"/backups/*/manifest.tsv || fail 'missing instruction backup manifest entry'
 
   [ ! -e "$user_home/.claude/skills/find-skills" ] || fail 'non-allowlisted skill was installed'
