@@ -346,6 +346,7 @@ test_unknown_runtime_manifest_target_is_preserved() {
   chmod +x "$copied_repo/bootstrap"
   awk -F '\t' -v path="$runtime_link" -v target="$unknown_target" 'BEGIN { OFS="\t" } $1 == path { $2 = target } { print }' "$manifest" > "$case_root/manifest.tmp"
   mv "$case_root/manifest.tmp" "$manifest"
+  chmod 600 "$manifest"
   rm "$runtime_link"
   ln -s "$unknown_target" "$runtime_link"
 
