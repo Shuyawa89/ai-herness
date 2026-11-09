@@ -172,7 +172,7 @@ After writing a plan, the ordinary Planner invokes `skills/planning/scripts/show
 
 The viewer may not refresh external changes automatically; press `r` in the viewer after an update. Styled Markdown may require `glow` in the plugin environment. Opening a plan may also expose names of other Git-ignored files in the viewer tree. Set `HERDR_WORKFLOW_PLAN_VIEWER=off` to disable the integration. To diagnose or explicitly reopen a plan, run `node <planning-skill>/scripts/show-workflow-plan.mjs --diagnose <absolute-plan-path>` or `node <planning-skill>/scripts/show-workflow-plan.mjs --retry <absolute-plan-path>`. Before retrying, check that a viewer pane has not already opened.
 
-Checks: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`, `node tests/prewalk_test.mjs`, `node --test tests/prewalk-adapter_test.mjs`, and `bash tests/bootstrap_test.sh`.
+Checks: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`, `node tests/prewalk_test.mjs`, `node --test tests/prewalk_adapter_test.mjs tests/prewalk_runtime_test.mjs tests/prewalk_routing_test.mjs`, `node tests/prewalk-workspace_test.mjs`, and `bash tests/bootstrap_test.sh`.
 
 ## Existing machine-specific configuration
 

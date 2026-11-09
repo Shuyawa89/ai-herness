@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { AsyncLocalStorage } from "node:async_hooks"
-import { dirname, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { randomUUID } from "node:crypto"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { Type } from "typebox"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { parsePrewalkArgs, parsePrewalkConfig, PREWALK_PLAN_PATH, resolveRoutingConfig } from "./prewalk-core.mjs"
@@ -178,8 +178,38 @@ function writePlanView(ctx: ExtensionContext, state: any) {
   writeFileSync(path, `${lines.join("\n")}\n`, "utf8")
 }
 
+type WorkspaceRecord = { sessionId: string; workspaceDir: string }
+const WORKSPACE_ENTRY_TYPE = "prewalk-workspace"
+
+function validateWorkspace(directory: string, projectDirectory: string) {
+  const project = realpathSync(projectDirectory)
+  const temporaryRoot = join(project, ".temp-local")
+  const requestedRoot = join(temporaryRoot, "sessions")
+  for (const [path, label] of [[temporaryRoot, "temporary directory"], [requestedRoot, "session workspace root"]]) {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new Error(`The ${label} must not be a symbolic link.`)
+    }
+  }
+  const root = realpathSync(requestedRoot)
+  const rootRelative = relative(project, root)
+  if (!rootRelative || isAbsolute(rootRelative) || rootRelative === ".." || rootRelative.startsWith(`..${sep}`)) {
+    throw new Error("The session workspace root must remain inside this project.")
+  }
+  const requestedWorkspace = resolve(directory)
+  const workspace = realpathSync(requestedWorkspace)
+  if (workspace !== requestedWorkspace || dirname(workspace) !== root) {
+    throw new Error("The recorded path must be the actual workspace directory directly inside the sessions root.")
+  }
+  const remainder = relative(root, workspace)
+  if (!remainder || isAbsolute(remainder) || remainder === ".." || remainder.startsWith(`..${sep}`)) {
+    throw new Error("The recorded workspace must be inside this project's .temp-local/sessions directory.")
+  }
+  return workspace
+}
+
 export default function (pi: ExtensionAPI) {
   let latestCtx: ExtensionContext | undefined
+  let workspaceRecord: WorkspaceRecord | undefined
   const modelSelectionOrigin = new AsyncLocalStorage<boolean>()
   let modelSwitchQueue: Promise<boolean> = Promise.resolve(true)
   let activeModelSwitch: { userModel: ExtensionContext["model"] } | undefined
@@ -215,6 +245,33 @@ export default function (pi: ExtensionAPI) {
   } })
   }
   let runtime = createRuntime()
+
+  pi.registerTool({
+    name: "prewalk_workspace",
+    label: "Prewalk workspace",
+    description: "Reserve this session's scratch workspace before writing any files. Choose a meaningful short lowercase English task description, even for a Japanese request. Repeated calls reuse the same folder.",
+    parameters: Type.Object({
+      description: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64, description: "Short English task slug, for example plan-isolation." }),
+    }),
+    executionMode: "sequential",
+    async execute(_id, { description }, _signal, _update, ctx) {
+      const sessionId = ctx.sessionManager.getSessionId()
+      if (workspaceRecord && workspaceRecord.sessionId !== sessionId) {
+        throw new Error("The session changed before its workspace was restored. Start the current session again.")
+      }
+      if (!workspaceRecord) {
+        // The installed extension is symlinked; resolve the helper from the canonical harness root.
+        const { createSessionWorkspace } = await import(pathToFileURL(join(harnessRoot, "skills/planning/scripts/session-workspace.mjs")).href)
+        const workspaceDir = createSessionWorkspace(ctx.cwd, description)
+        const record = { sessionId, workspaceDir }
+        pi.appendEntry(WORKSPACE_ENTRY_TYPE, record)
+        workspaceRecord = record
+      }
+      const workspaceDir = validateWorkspace(workspaceRecord.workspaceDir, ctx.cwd)
+      const details = { workspaceDir, planPath: join(workspaceDir, "workflow-plan.md") }
+      return { content: [{ type: "text", text: JSON.stringify(details) }], details }
+    },
+  })
 
   const notify = (ctx: ExtensionContext | undefined, text: string, kind: "info" | "warning" | "error" = "info") => ctx?.ui.notify(text, kind)
   const snapshotState = () => runtime.state()
@@ -357,6 +414,24 @@ export default function (pi: ExtensionAPI) {
     latestCtx = ctx
     armed = undefined
     shownProposal = undefined
+    workspaceRecord = undefined
+    const sessionId = ctx.sessionManager.getSessionId()
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type !== "custom" || entry.customType !== WORKSPACE_ENTRY_TYPE) continue
+      const record = entry.data as Partial<WorkspaceRecord> | undefined
+      // Forked sessions inherit entries but have a different ID and need a new folder.
+      if (record?.sessionId === sessionId && typeof record.workspaceDir === "string") {
+        workspaceRecord = { sessionId, workspaceDir: record.workspaceDir }
+      }
+    }
+    if (workspaceRecord) {
+      try {
+        validateWorkspace(workspaceRecord.workspaceDir, ctx.cwd)
+      } catch (error) {
+        workspaceRecord = undefined
+        notify(ctx, `Prewalk: could not restore this session's workspace: ${error instanceof Error ? error.message : String(error)}`, "error")
+      }
+    }
     runtime = createRuntime()
     const restored = await runtime.restore({ sessionId: ctx.sessionManager.getSessionId(), workspace: ctx.cwd })
     if (restored.ok && !restored.terminal) {
@@ -387,6 +462,16 @@ export default function (pi: ExtensionAPI) {
     const language = explicitLanguage(event.prompt)
     if (language) await runtime.setDisplayLanguage(language)
     const state = snapshotState()
+    if (workspaceRecord && workspaceRecord.sessionId === ctx.sessionManager.getSessionId()) {
+      try {
+        const workspaceDir = validateWorkspace(workspaceRecord.workspaceDir, ctx.cwd)
+        const routingActive = state && !isTerminal(state)
+        const planNote = routingActive ? "" : ` Its exact workflow plan is ${join(workspaceDir, "workflow-plan.md")}. An idle Prewalk does not resume earlier work without an explicit request.`
+        event.systemPromptOptions.appendSystemPrompt = (event.systemPromptOptions.appendSystemPrompt ?? "") + `\n\nSESSION WORKSPACE\nThis session's workspace is ${workspaceDir}.${planNote} Keep all scratch files in this workspace, retain these paths across handoffs and compaction, and never select a different session's plan or a latest plan automatically.`
+      } catch {
+        workspaceRecord = undefined
+      }
+    }
     if (state && !["stopped", "complete", "paused"].includes(state.stage)) {
       const stageGuidance = state.stage === "frontier_plan"
         ? `Discover repository-specific checks from instructions, CI, build files, and tests. Write the human plan and all human-readable plan fields in ${planLanguage(state) === "ja" ? "Japanese" : "English"}, following the user's explicit language preference; keep paths, IDs, and commands unchanged. Then submit a structured plan with prewalk_checkpoint action submit_plan. Shape: {hardContract:{outcome:string,constraints:string[],allowedPaths:string[],protectedPaths:string[]},softPlan:{expectedFiles:string[]},phases:[{id:string,todos:[{id:string,text:string,status:'pending'}],checks:[{id:string,command:string,args:string[],cwd:string,required:true}]}]}. A phase without executable checks needs evidenceRequired:string[] of repository-relative artifact files (record their existence via prewalk_checkpoint progress evidence). Do not edit source before the user approves the proposal.`

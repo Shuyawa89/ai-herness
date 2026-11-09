@@ -174,7 +174,7 @@ Pi ではモデルが `prewalk_workspace` ツールに短い作業名を渡し�
 
 ビューアー上の内容は自動更新されない場合があるため、変更後はビューアーで `r` を押す。Markdown の装飾にはプラグイン側の `glow` が必要な場合がある。プランを開く際、Git の無視対象ファイルの名前がツリーに表示されることがある。無効化するには `HERDR_WORKFLOW_PLAN_VIEWER=off` を設定する。手動診断・再表示には、それぞれ `node <planning-skill>/scripts/show-workflow-plan.mjs --diagnose <絶対プランパス>`、`node <planning-skill>/scripts/show-workflow-plan.mjs --retry <絶対プランパス>` を使う。再表示前に、既にペインが開いていないことを確認する。
 
-検証: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk-adapter_test.mjs`、`bash tests/bootstrap_test.sh`。
+検証: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk_adapter_test.mjs tests/prewalk_runtime_test.mjs tests/prewalk_routing_test.mjs`、`node tests/prewalk-workspace_test.mjs`、`bash tests/bootstrap_test.sh`。
 
 ## 既存のマシン固有設定
 
