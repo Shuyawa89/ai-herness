@@ -413,6 +413,7 @@ SKILL_ALLOWLIST=(
   task-dashboard
   security-audit
   yomiyasu
+  unslop
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand
