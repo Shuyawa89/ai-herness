@@ -9,6 +9,7 @@
 *.pem
 auth.json
 prewalk.json
+AGENTS.local.md
 credentials.json
 node_modules/
 .venv/

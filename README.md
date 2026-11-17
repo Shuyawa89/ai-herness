@@ -176,9 +176,18 @@ Pi ではモデルが `prewalk_workspace` ツールに短い作業名を渡し�
 
 検証: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`、`node tests/prewalk_test.mjs`、`node --test tests/prewalk_adapter_test.mjs tests/prewalk_runtime_test.mjs tests/prewalk_routing_test.mjs`、`node tests/prewalk-workspace_test.mjs`、`bash tests/bootstrap_test.sh`。
 
+## 環境ごとの設定（AGENTS.local.md）
+
+マシンや環境ごとに異なる設定は、harness のルートに `AGENTS.local.md` を置くと `AGENTS.md` へ追加で読み込まれる。このファイルは `.gitignore` 対象でコミットされない。雛形は `AGENTS.local.md.example`。
+
+- `AGENTS.md` の「Local Environment Settings」の節が、ファイルが存在すれば読んで適用するよう指示している。Claude Code では同節の `@AGENTS.local.md` の行により起動時に読み込まれる
+- `./bootstrap` は、ファイルが存在するときだけ `~/.claude/`、`~/.codex/`、`~/.pi/agent/` の各指示ファイルの隣へリンクする。ファイルが無い間はリンクも作られない。ファイルを削除して bootstrap を再実行すると、残ったリンクは片付けられる
+- 書くのはマシン固有のパス、ツールの在りか、その環境だけの事情に限る。秘密情報は書かない。毎セッション読み込まれるので短く保つ
+- ローカル設定が優先するのはマシン固有の事実についてだけであり、共有側の安全・承認・Git のルールは上書きできない
+
 ## 既存のマシン固有設定
 
-bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証、hooks、agents、prompts を意図的に変更しない。追加するのはレビュー済みの共有 Skill とレビュー済みの Pi Prewalk extension の symlink のみ。リポジトリ固有の `AGENTS.md` と `CLAUDE.md` は、各ツールの通常の優先順位ルールに従って適用される。
+bootstrap は `~/.codex/config.toml`、Claude の設定、Pi の設定、認証、hooks、agents、prompts を意図的に変更しない。追加するのはレビュー済みの共有 Skill とレビュー済みの Pi Prewalk extension の symlink のみ（これに加えて、上記の `AGENTS.local.md` が存在する場合のリンク）。リポジトリ固有の `AGENTS.md` と `CLAUDE.md` は、各ツールの通常の優先順位ルールに従って適用される。
 
 このリポジトリ内で作業するとき、同じ `AGENTS.md` がグローバルとプロジェクトの両方として検出されることがある。これは無害だが、この harness の通常の作業場所は他のリポジトリである。
 

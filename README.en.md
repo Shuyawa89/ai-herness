@@ -174,9 +174,18 @@ The viewer may not refresh external changes automatically; press `r` in the view
 
 Checks: `node --test tests/show-workflow-plan_test.mjs tests/session-workspace_test.mjs`, `node tests/prewalk_test.mjs`, `node --test tests/prewalk_adapter_test.mjs tests/prewalk_runtime_test.mjs tests/prewalk_routing_test.mjs`, `node tests/prewalk-workspace_test.mjs`, and `bash tests/bootstrap_test.sh`.
 
+## Per-environment settings (AGENTS.local.md)
+
+Settings that differ per machine or environment can be layered onto `AGENTS.md` by placing an `AGENTS.local.md` file in the harness root. The file is gitignored and never committed. A template is provided as `AGENTS.local.md.example`.
+
+- The "Local Environment Settings" section of `AGENTS.md` instructs agents to read and apply the file when it exists. In Claude Code, the `@AGENTS.local.md` line in that section also loads it at launch.
+- The bootstrap links the file next to each tool's instructions (`~/.claude/`, `~/.codex/`, `~/.pi/agent/`) only while it exists. No links are created while it is absent, and re-running the bootstrap after deleting the file removes the leftover links.
+- Write only machine-specific paths, tool locations, and facts about that environment. Never put secrets in it, and keep it short: it loads into every session.
+- The local file takes precedence only for machine-specific facts; it cannot override the shared safety, approval, or Git rules.
+
 ## Existing machine-specific configuration
 
-The bootstrap deliberately does not modify `~/.codex/config.toml`, Claude settings, Pi settings, authentication, hooks, agents, or prompts. It adds only the reviewed shared Skills and the reviewed Pi Prewalk extension as symlinks. Repository-specific `AGENTS.md` and `CLAUDE.md` files continue to apply according to each tool's normal precedence rules.
+The bootstrap deliberately does not modify `~/.codex/config.toml`, Claude settings, Pi settings, authentication, hooks, agents, or prompts. It adds only the reviewed shared Skills and the reviewed Pi Prewalk extension as symlinks (plus the `AGENTS.local.md` links described above, when that file exists). Repository-specific `AGENTS.md` and `CLAUDE.md` files continue to apply according to each tool's normal precedence rules.
 
 When working inside this repository, the same `AGENTS.md` may be discovered once globally and once as project guidance. This is harmless, but other repositories are the normal working location for this harness.
 

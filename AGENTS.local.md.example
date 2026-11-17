@@ -1,0 +1,12 @@
+# Local Environment Settings (example)
+
+Copy this file to `AGENTS.local.md` in the harness root and keep only the
+settings that apply to this machine. `AGENTS.local.md` is gitignored and is
+loaded in addition to `AGENTS.md` on this machine only. Do not put secrets
+here: the file is loaded into every session's context.
+
+## This Machine
+
+- OS and shell notes that differ from the shared defaults.
+- Machine-specific paths, tool locations, and local services.
+- Providers or models available only in this environment.
