@@ -80,4 +80,16 @@ The license texts are preserved in `skills/yomiyasu/LICENSE` and `skills/yomiyas
 
 The CC BY 4.0 license text is preserved in `LICENSES/heydamir-unslop-CC-BY-4.0.txt`.
 
+## modern-web-guidance and chrome-extensions
+
+- Source: https://github.com/GoogleChrome/modern-web-guidance
+- Upstream revision: `64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65`
+- Upstream release: `v1.0.1`
+- Installed source records: `skills/modern-web-guidance/` and `skills/chrome-extensions/`
+- License: Apache License 2.0
+- Copyright: Google (the upstream LICENSE is the standard Apache License 2.0 text with an unfilled copyright appendix)
+- Local changes: none; registered in the harness bootstrap allowlist. Both skills are copied verbatim, including the modern-web-guidance guide corpus under `skills/modern-web-guidance/guides/`. By upstream design, the modern-web-guidance skill retrieves guidance through the `modern-web-guidance@latest` npm CLI at runtime (network access and Node.js >= 22 required), so the retrieved guidance can be newer than the vendored corpus; the vendored `SKILL.md` and guides remain pinned at the recorded revision.
+
+The Apache License 2.0 text is preserved in `LICENSES/GoogleChrome-modern-web-guidance-Apache-2.0.txt`.
+
 The remaining skills were migrated from pre-existing personal configuration. Their upstream provenance was not recorded in the original local setup; review provenance before publishing this repository publicly.

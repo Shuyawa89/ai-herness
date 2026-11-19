@@ -438,6 +438,8 @@ SKILL_ALLOWLIST=(
   security-audit
   yomiyasu
   unslop
+  modern-web-guidance
+  chrome-extensions
 )
 EXPLICIT_SKILL_ALLOWLIST=(
   understand
