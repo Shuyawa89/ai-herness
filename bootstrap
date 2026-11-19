@@ -157,6 +157,16 @@ load_stale_links() {
       "$HARNESS_USER_HOME/.claude/skills"|"$HARNESS_USER_HOME/.agents/skills"|"$HARNESS_USER_HOME/.codex/skills")
         [[ "$old_name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || continue
         ;;
+      "$HARNESS_USER_HOME/.claude"|"$HARNESS_USER_HOME/.codex"|"$HARNESS_USER_HOME/.pi/agent")
+        [ "$old_name" = "AGENTS.local.md" ] || continue
+        case "$old_target" in
+          */AGENTS.local.md) ;;
+          *) continue ;;
+        esac
+        case "$old_target" in
+          *'/../'*|*'/..'|*'/./'*|*'/.' ) continue ;;
+        esac
+        ;;
       "$HARNESS_USER_HOME/.pi/agent/extensions")
         case "$old_name" in
           ai-harness-prewalk.ts) old_extension_target="pi-prewalk.ts" ;;
@@ -439,6 +449,15 @@ EXPLICIT_SKILL_ALLOWLIST=(
 add_link "$HARNESS_USER_HOME/.claude/CLAUDE.md" "$INSTRUCTIONS_FILE" "instructions"
 add_link "$HARNESS_USER_HOME/.codex/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
 add_link "$HARNESS_USER_HOME/.pi/agent/AGENTS.md" "$INSTRUCTIONS_FILE" "instructions"
+# Machine-local instruction overlay: when AGENTS.local.md exists in the
+# harness root, link it beside each tool's instructions so the conditional
+# include declared in AGENTS.md resolves next to the loaded file. The file
+# itself is gitignored and is never created by bootstrap.
+if [ -f "$SCRIPT_DIR/AGENTS.local.md" ]; then
+  add_link "$HARNESS_USER_HOME/.claude/AGENTS.local.md" "$SCRIPT_DIR/AGENTS.local.md" "instructions"
+  add_link "$HARNESS_USER_HOME/.codex/AGENTS.local.md" "$SCRIPT_DIR/AGENTS.local.md" "instructions"
+  add_link "$HARNESS_USER_HOME/.pi/agent/AGENTS.local.md" "$SCRIPT_DIR/AGENTS.local.md" "instructions"
+fi
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/ai-harness-prewalk.ts" "$PI_PREWALK_EXTENSION" "extension"
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-core.mjs" "$PREWALK_CORE_MODULE" "extension"
 add_link "$HARNESS_USER_HOME/.pi/agent/extensions/prewalk-runtime.mjs" "$PREWALK_RUNTIME_MODULE" "extension"

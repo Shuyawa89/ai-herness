@@ -114,6 +114,23 @@ test_fresh_install_backup_and_idempotency() {
   run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" > "$case_root/second-output.txt"
   grep -Fq 'prewalk.json not found' "$case_root/second-output.txt" && fail 'reminder shown although prewalk config exists'
 
+  [ ! -L "$user_home/.claude/AGENTS.local.md" ] || fail 'AGENTS.local.md linked although the local file does not exist'
+  [ ! -L "$user_home/.codex/AGENTS.local.md" ] || fail 'AGENTS.local.md linked although the local file does not exist'
+  [ ! -L "$user_home/.pi/agent/AGENTS.local.md" ] || fail 'AGENTS.local.md linked although the local file does not exist'
+
+  printf '%s\n' '# Local test settings' > "$copied_repo/AGENTS.local.md"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+  assert_link "$user_home/.claude/AGENTS.local.md" "$canonical_repo/AGENTS.local.md"
+  assert_link "$user_home/.codex/AGENTS.local.md" "$canonical_repo/AGENTS.local.md"
+  assert_link "$user_home/.pi/agent/AGENTS.local.md" "$canonical_repo/AGENTS.local.md"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" --check >/dev/null
+
+  rm -f "$copied_repo/AGENTS.local.md"
+  run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
+  [ ! -L "$user_home/.claude/AGENTS.local.md" ] || fail 'stale AGENTS.local.md link was not removed'
+  [ ! -L "$user_home/.codex/AGENTS.local.md" ] || fail 'stale AGENTS.local.md link was not removed'
+  [ ! -L "$user_home/.pi/agent/AGENTS.local.md" ] || fail 'stale AGENTS.local.md link was not removed'
+
   backup_count_before="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   run_bootstrap "$copied_repo/bootstrap" "$user_home" "$state_root" >/dev/null
   backup_count_after="$(find "$state_root/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
